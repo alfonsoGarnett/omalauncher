@@ -69,32 +69,6 @@ class LinuxWindowActivity : InstantActivity() {
     private var window: XdgToplevel? = null
     private var surfaceView: WindowSurfaceView? = null
 
-    fun togglePointerCapture() {
-        val sv = surfaceView ?: return
-        if (sv.hasPointerCapture()) {
-            sv.releasePointerCapture()
-        } else {
-            sv.requestPointerCapture()
-        }
-    }
-
-    override fun onPointerCaptureChanged(hasCapture: Boolean) {
-        super.onPointerCaptureChanged(hasCapture)
-        surfaceView?.onCaptureChanged(hasCapture)
-    }
-
-    override fun onWindowFocusChanged(hasFocus: Boolean) {
-        super.onWindowFocusChanged(hasFocus)
-        if (!hasFocus) {
-            surfaceView?.releasePointerCapture()
-        }
-    }
-
-    override fun onPause() {
-        super.onPause()
-        surfaceView?.releasePointerCapture()
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val window = runtime.wm.windowByHandle(intent.data?.lastPathSegment)
@@ -105,6 +79,13 @@ class LinuxWindowActivity : InstantActivity() {
         }
         this.window = window
         applySystemBars(this, Palette.isLight)
+        getWindow().decorView.setOnHoverListener { _, event ->
+            if (event.isFromSource(InputDevice.SOURCE_CLASS_POINTER)) {
+                surfaceView?.handleHover(event) ?: false
+            } else {
+                false
+            }
+        }
         setInstantContent {
             LaunchedEffect(Palette.isLight) { applySystemBars(this@LinuxWindowActivity, Palette.isLight) }
             AppWindow(runtime, window) { surfaceView = it }
@@ -145,28 +126,15 @@ class LinuxWindowActivity : InstantActivity() {
     // Lint flags super.dispatchKeyEvent: ComponentActivity marks its override @RestrictTo, but Activity's is public API.
     @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (event.action == KeyEvent.ACTION_DOWN) {
-            val isCtrl = event.isCtrlPressed
-            val isAlt = event.isAltPressed
-            val isMeta = event.isMetaPressed
-            if ((isCtrl && isAlt && event.keyCode == KeyEvent.KEYCODE_G) ||
-                (isMeta && event.keyCode == KeyEvent.KEYCODE_ESCAPE)) {
-                togglePointerCapture()
-                return true
-            }
-        }
         if (runtime.keyboard.handle(event)) return true
         return super.dispatchKeyEvent(event)
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         if (event.isFromSource(InputDevice.SOURCE_MOUSE)) {
-            if (event.action == MotionEvent.ACTION_DOWN && surfaceView?.hasPointerCapture() == false) {
-                surfaceView?.requestPointerCapture()
-            }
-        } else if (event.isFromSource(InputDevice.SOURCE_TOUCHSCREEN)) {
-            if (surfaceView?.hasPointerCapture() == true) {
-                surfaceView?.releasePointerCapture()
+            val sv = surfaceView
+            if (sv != null && sv.handleMouseTouch(event)) {
+                return true
             }
         }
         return super.dispatchTouchEvent(event)
@@ -174,28 +142,14 @@ class LinuxWindowActivity : InstantActivity() {
 
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
         if (event.isFromSource(InputDevice.SOURCE_CLASS_POINTER)) {
-            when (event.action) {
-                MotionEvent.ACTION_SCROLL -> {
-                    val hit = window?.renderer?.hitTest(event.x, event.y)
-                    if (hit != null) {
-                        runtime.wm.pointerMove(hit)
-                    }
-                    val vScroll = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
-                    val hScroll = event.getAxisValue(MotionEvent.AXIS_HSCROLL)
-                    if (vScroll != 0f || hScroll != 0f) {
-                        val dy = -vScroll * 15f
-                        val dx = -hScroll * 15f
-                        val steps = (-vScroll).roundToInt()
-                        runtime.wm.scroll(dx, dy, AXIS_SOURCE_WHEEL, steps)
-                        return true
-                    }
-                }
-                MotionEvent.ACTION_HOVER_MOVE -> {
-                    surfaceView?.updateHover(event.x, event.y)
-                    val hit = window?.renderer?.hitTest(event.x, event.y)
-                    if (hit != null) {
-                        runtime.wm.pointerMove(hit)
-                    }
+            val sv = surfaceView
+            if (sv != null) {
+                if (event.actionMasked == MotionEvent.ACTION_SCROLL) {
+                    if (sv.handleScroll(event)) return true
+                } else if (event.actionMasked == MotionEvent.ACTION_HOVER_MOVE ||
+                    event.actionMasked == MotionEvent.ACTION_HOVER_ENTER ||
+                    event.actionMasked == MotionEvent.ACTION_HOVER_EXIT) {
+                    if (sv.handleHover(event)) return true
                 }
             }
         }
@@ -332,63 +286,109 @@ private class WindowSurfaceView(
             layoutWindow()
         }
 
-    fun updateHover(x: Float, y: Float) {
-        cursorX = x
-        cursorY = y
-    }
-
-    fun onCaptureChanged(hasCapture: Boolean) {
-        if (hasCapture) {
-            pointerIcon = PointerIcon.getSystemIcon(context, PointerIcon.TYPE_NULL)
-        } else {
-            pointerIcon = PointerIcon.getSystemIcon(context, PointerIcon.TYPE_DEFAULT)
-            capturedButtons = 0
-        }
-    }
-
-    override fun onCapturedPointerEvent(event: MotionEvent): Boolean {
+    fun handleHover(event: MotionEvent): Boolean {
         when (event.actionMasked) {
-            MotionEvent.ACTION_MOVE -> {
-                val dx = event.getAxisValue(MotionEvent.AXIS_RELATIVE_X)
-                val dy = event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y)
-                val maxH = if (visibleHeight in 1..surfaceHeight) visibleHeight else surfaceHeight
-                cursorX = (cursorX + dx).coerceIn(0f, surfaceWidth.toFloat())
-                cursorY = (cursorY + dy).coerceIn(0f, maxH.toFloat())
-                val hit = renderer.hitTest(cursorX, cursorY)
-                runtime.wm.pointerMove(hit)
-            }
-            MotionEvent.ACTION_SCROLL -> {
-                val vScroll = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
-                val hScroll = event.getAxisValue(MotionEvent.AXIS_HSCROLL)
-                if (vScroll != 0f || hScroll != 0f) {
-                    val dy = -vScroll * 15f
-                    val dx = -hScroll * 15f
-                    val steps = (-vScroll).roundToInt()
-                    runtime.wm.scroll(dx, dy, AXIS_SOURCE_WHEEL, steps)
+            MotionEvent.ACTION_HOVER_MOVE, MotionEvent.ACTION_HOVER_ENTER -> {
+                val hit = renderer.hitTest(event.x, event.y)
+                if (hit != null) {
+                    runtime.wm.pointerMove(hit)
                 }
+                return true
+            }
+            MotionEvent.ACTION_HOVER_EXIT -> {
+                runtime.wm.pointerMove(null)
+                return true
             }
         }
+        return false
+    }
 
-        val currentButtons = event.buttonState
+    fun handleScroll(event: MotionEvent): Boolean {
+        val hit = renderer.hitTest(event.x, event.y)
+        if (hit != null) {
+            runtime.wm.pointerMove(hit)
+        }
+        val vScroll = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
+        val hScroll = event.getAxisValue(MotionEvent.AXIS_HSCROLL)
+        if (vScroll != 0f || hScroll != 0f) {
+            val dy = -vScroll * 15f
+            val dx = -hScroll * 15f
+            val steps = (-vScroll).roundToInt()
+            runtime.wm.scroll(dx, dy, AXIS_SOURCE_WHEEL, steps)
+            return true
+        }
+        return false
+    }
+
+    fun handleMouseTouch(event: MotionEvent): Boolean {
+        val hit = renderer.hitTest(event.x, event.y)
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                if (hit != null) {
+                    runtime.wm.onPress(window, hit)
+                    runtime.wm.pointerMove(hit)
+                }
+                updateButtons(event.buttonState)
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (hit != null) {
+                    runtime.wm.pointerMove(hit)
+                }
+                updateButtons(event.buttonState)
+                return true
+            }
+            MotionEvent.ACTION_UP -> {
+                updateButtons(0)
+                return true
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                updateButtons(0)
+                runtime.wm.pointerMove(null)
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun updateButtons(currentButtons: Int) {
         val pressed = currentButtons and capturedButtons.inv()
         val released = capturedButtons and currentButtons.inv()
 
-        if (pressed != 0) {
-            val hit = renderer.hitTest(cursorX, cursorY)
-            if (hit != null) {
-                runtime.wm.onPress(window, hit)
-            }
-            if (pressed and MotionEvent.BUTTON_PRIMARY != 0) runtime.wm.pointerButton(BTN_LEFT, true)
-            if (pressed and MotionEvent.BUTTON_SECONDARY != 0) runtime.wm.pointerButton(BTN_RIGHT, true)
-            if (pressed and MotionEvent.BUTTON_TERTIARY != 0) runtime.wm.pointerButton(BTN_MIDDLE, true)
-        }
-        if (released != 0) {
-            if (released and MotionEvent.BUTTON_PRIMARY != 0) runtime.wm.pointerButton(BTN_LEFT, false)
-            if (released and MotionEvent.BUTTON_SECONDARY != 0) runtime.wm.pointerButton(BTN_RIGHT, false)
-            if (released and MotionEvent.BUTTON_TERTIARY != 0) runtime.wm.pointerButton(BTN_MIDDLE, false)
-        }
+        if (pressed and MotionEvent.BUTTON_PRIMARY != 0) runtime.wm.pointerButton(BTN_LEFT, true)
+        if (pressed and MotionEvent.BUTTON_SECONDARY != 0) runtime.wm.pointerButton(BTN_RIGHT, true)
+        if (pressed and MotionEvent.BUTTON_TERTIARY != 0) runtime.wm.pointerButton(BTN_MIDDLE, true)
+
+        if (released and MotionEvent.BUTTON_PRIMARY != 0) runtime.wm.pointerButton(BTN_LEFT, false)
+        if (released and MotionEvent.BUTTON_SECONDARY != 0) runtime.wm.pointerButton(BTN_RIGHT, false)
+        if (released and MotionEvent.BUTTON_TERTIARY != 0) runtime.wm.pointerButton(BTN_MIDDLE, false)
+
         capturedButtons = currentButtons
-        return true
+    }
+
+    override fun onHoverEvent(event: MotionEvent): Boolean {
+        if (event.isFromSource(InputDevice.SOURCE_CLASS_POINTER)) {
+            if (handleHover(event)) return true
+        }
+        return super.onHoverEvent(event)
+    }
+
+    override fun onGenericMotionEvent(event: MotionEvent): Boolean {
+        if (event.isFromSource(InputDevice.SOURCE_CLASS_POINTER)) {
+            if (event.actionMasked == MotionEvent.ACTION_SCROLL) {
+                if (handleScroll(event)) return true
+            } else if (handleHover(event)) {
+                return true
+            }
+        }
+        return super.onGenericMotionEvent(event)
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (event.isFromSource(InputDevice.SOURCE_MOUSE)) {
+            if (handleMouseTouch(event)) return true
+        }
+        return super.onTouchEvent(event)
     }
 
     private fun layoutWindow() {
@@ -407,6 +407,7 @@ private class WindowSurfaceView(
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         window.renderer = renderer
+        pointerIcon = PointerIcon.getSystemIcon(context, PointerIcon.TYPE_NULL)
     }
 
     override fun onDetachedFromWindow() {
@@ -425,10 +426,6 @@ private class WindowSurfaceView(
     ) {
         surfaceWidth = width
         surfaceHeight = height
-        if (cursorX == 0f && cursorY == 0f) {
-            cursorX = width / 2f
-            cursorY = height / 2f
-        }
         renderer.attach(holder.surface, width, height)
         layoutWindow()
     }
