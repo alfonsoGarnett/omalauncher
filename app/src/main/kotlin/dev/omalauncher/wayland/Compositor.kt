@@ -102,6 +102,18 @@ class PixelStore(
     }
 }
 
+/** A buffer providing pixels to a surface, either via wl_shm or linux_dmabuf. */
+interface Buffer {
+    val id: Int
+    val width: Int
+    val height: Int
+    val isOpaque: Boolean
+    fun ref()
+    fun unref()
+    fun copyTo(store: PixelStore, flat: IntArray, count: Int): Boolean
+    fun release()
+}
+
 class Surface(
     client: Client,
     id: Int,
@@ -109,7 +121,7 @@ class Surface(
 ) : Resource(client, id, version) {
     override val iface = "wl_surface"
 
-    private var pendingBuffer: ShmBuffer? = null
+    private var pendingBuffer: Buffer? = null
     private var pendingAttach = false
     private var pendingScale = 1
     private var pendingInput: List<IntArray>? = null
@@ -174,7 +186,7 @@ class Surface(
         when (opcode) {
             0 -> destroy()
             1 -> { // attach
-                pendingBuffer = client.get<ShmBuffer>(args.obj())
+                pendingBuffer = client.get<Buffer>(args.obj())
                 pendingAttach = true
             }
             2 -> pendingDamage += intArrayOf(args.int(), args.int(), args.int(), args.int())
@@ -229,16 +241,16 @@ class Surface(
 
     /** Queues the copy of [buffer]'s damaged pixels for after the lock; the client gets the buffer back then. */
     private fun upload(
-        buffer: ShmBuffer,
+        buffer: Buffer,
         full: Boolean,
     ) {
-        val opaque = buffer.format == 1
+        val opaque = buffer.isOpaque
         val current = store
         val fresh = current == null || current.width != buffer.width || current.height != buffer.height || current.opaque != opaque
         // A new store is only shown once its pixels are in: never a frame of uninitialized memory.
         val target = if (fresh) PixelStore(buffer.width, buffer.height, opaque) else current!!
         val rects = if (fresh || full) listOf(intArrayOf(0, 0, buffer.width, buffer.height)) else damageRects(buffer)
-        buffer.pool.ref()
+        buffer.ref()
         client.defer {
             if (rects.isNotEmpty()) {
                 val flat = IntArray(rects.size * 4)
@@ -249,7 +261,7 @@ class Surface(
                     }
                 }
             }
-            buffer.pool.unref()
+            buffer.unref()
             buffer.release()
             if (fresh) {
                 // Destroyed or resized meanwhile (another client thread can't, but a disconnect can): drop it.
@@ -260,7 +272,7 @@ class Surface(
     }
 
     /** This commit's damage in buffer pixels, clamped to the buffer. */
-    private fun damageRects(buffer: ShmBuffer): List<IntArray> {
+    private fun damageRects(buffer: Buffer): List<IntArray> {
         val s = bufferScale
         // Clients damage "everything" with INT32_MAX sizes: all math in Long, clamped to the buffer.
         val all =
@@ -426,12 +438,16 @@ class ShmBuffer(
     id: Int,
     val pool: ShmPool,
     private val offset: Int,
-    val width: Int,
-    val height: Int,
+    override val width: Int,
+    override val height: Int,
     private val stride: Int,
     val format: Int,
-) : Resource(client, id, 1) {
+) : Resource(client, id, 1), Buffer {
     override val iface = "wl_buffer"
+    override val isOpaque get() = format == 1
+
+    override fun ref() = pool.ref()
+    override fun unref() = pool.unref()
 
     override fun request(
         opcode: Int,
@@ -441,7 +457,7 @@ class ShmBuffer(
     }
 
     /** Copies [count] rects of [flat] (x, y, w, h each) into [store]. */
-    fun copyTo(
+    override fun copyTo(
         store: PixelStore,
         flat: IntArray,
         count: Int,
@@ -453,11 +469,228 @@ class ShmBuffer(
         }
 
     /** Hands the buffer back to the client; thread-safe. */
-    fun release() {
+    override fun release() {
         if (client.alive) send(event(0))
     }
 
-    override fun onDestroy() = pool.unref()
+    override fun onDestroy() = unref()
+}
+
+class DmabufBuffer(
+    client: Client,
+    id: Int,
+    private var fd: Int,
+    override val width: Int,
+    override val height: Int,
+    private val stride: Int,
+    private val offset: Int,
+    val format: Int,
+    val modifier: Long,
+    val flags: Int,
+) : Resource(client, id, 1), Buffer {
+    override val iface = "wl_buffer"
+
+    private val size = offset + stride * height
+    @Volatile
+    var ptr = if (fd >= 0 && size > 0) Native.mmap(fd, size) else 0L
+        private set
+
+    private val refs = AtomicInteger(1)
+
+    override val isOpaque get() =
+        format == LinuxDmabufResource.DRM_FORMAT_XRGB8888 ||
+        format == LinuxDmabufResource.DRM_FORMAT_XBGR8888 ||
+        format == LinuxDmabufResource.DRM_FORMAT_RGBX8888
+
+    override fun ref() {
+        refs.incrementAndGet()
+    }
+
+    override fun unref() {
+        if (refs.decrementAndGet() == 0) {
+            synchronized(this) {
+                if (ptr != 0L) {
+                    Native.munmap(ptr, size)
+                    ptr = 0L
+                }
+            }
+            if (fd >= 0) {
+                Native.close(fd)
+                fd = -1
+            }
+        }
+    }
+
+    override fun request(
+        opcode: Int,
+        args: Args,
+    ) {
+        if (opcode == 0) destroy()
+    }
+
+    override fun copyTo(
+        store: PixelStore,
+        flat: IntArray,
+        count: Int,
+    ): Boolean =
+        synchronized(this) {
+            if (ptr == 0L) return false
+            Native.dmabufCopy(ptr, fd, offset, stride, format, flags, store.ptr, flat, count) == 0
+        }
+
+    override fun release() {
+        if (client.alive) send(event(0))
+    }
+
+    override fun onDestroy() = unref()
+}
+
+class LinuxDmabufResource(
+    client: Client,
+    id: Int,
+    version: Int,
+) : Resource(client, id, version) {
+    override val iface = "zwp_linux_dmabuf_v1"
+
+    init {
+        for (fmt in SUPPORTED_FORMATS) {
+            if (version >= 3) {
+                send(event(1).uint(fmt).uint(0).uint(0)) // DRM_FORMAT_MOD_LINEAR
+                send(event(1).uint(fmt).uint(0x00ffffff).uint(-1)) // DRM_FORMAT_MOD_INVALID
+            }
+            if (version < 4) {
+                send(event(0).uint(fmt))
+            }
+        }
+    }
+
+    override fun request(
+        opcode: Int,
+        args: Args,
+    ) {
+        when (opcode) {
+            0 -> destroy()
+            1 -> { // create_params
+                val paramsId = args.newId()
+                client.register(LinuxBufferParamsResource(client, paramsId, version))
+            }
+        }
+    }
+
+    companion object {
+        const val DRM_FORMAT_ARGB8888 = 0x34325241
+        const val DRM_FORMAT_XRGB8888 = 0x34325258
+        const val DRM_FORMAT_ABGR8888 = 0x34324241
+        const val DRM_FORMAT_XBGR8888 = 0x34324258
+        const val DRM_FORMAT_RGBA8888 = 0x34324152
+        const val DRM_FORMAT_RGBX8888 = 0x34325852
+
+        val SUPPORTED_FORMATS = intArrayOf(
+            DRM_FORMAT_ARGB8888,
+            DRM_FORMAT_XRGB8888,
+            DRM_FORMAT_ABGR8888,
+            DRM_FORMAT_XBGR8888,
+            DRM_FORMAT_RGBA8888,
+            DRM_FORMAT_RGBX8888,
+        )
+    }
+}
+
+class LinuxBufferParamsResource(
+    client: Client,
+    id: Int,
+    version: Int,
+) : Resource(client, id, version) {
+    override val iface = "zwp_linux_buffer_params_v1"
+
+    private var planeFd = -1
+    private var planeOffset = 0
+    private var planeStride = 0
+    private var planeModifier = 0L
+    private var planeAdded = false
+    private var used = false
+
+    override fun request(
+        opcode: Int,
+        args: Args,
+    ) {
+        when (opcode) {
+            0 -> destroy()
+            1 -> { // add
+                val fd = args.fd()
+                val planeIdx = args.uint()
+                val offset = args.uint()
+                val stride = args.uint()
+                val modHi = args.uint()
+                val modLo = args.uint()
+                if (used) {
+                    if (fd >= 0) Native.close(fd)
+                    return client.postError(id, 0, "already used")
+                }
+                if (planeIdx == 0 && !planeAdded) {
+                    planeFd = fd
+                    planeOffset = offset
+                    planeStride = stride
+                    planeModifier = (modHi.toLong() shl 32) or (modLo.toLong() and 0xFFFFFFFFL)
+                    planeAdded = true
+                } else {
+                    if (fd >= 0) Native.close(fd)
+                }
+            }
+            2 -> { // create
+                val width = args.int()
+                val height = args.int()
+                val format = args.uint()
+                val flags = args.uint()
+                if (used) return client.postError(id, 0, "already used")
+                used = true
+                val fd = planeFd
+                planeFd = -1
+                if (!planeAdded || fd < 0 || width <= 0 || height <= 0 || planeStride <= 0) {
+                    if (fd >= 0) Native.close(fd)
+                    send(event(1)) // failed
+                    return
+                }
+                val bufferId = client.newServerId()
+                val buf = DmabufBuffer(client, bufferId, fd, width, height, planeStride, planeOffset, format, planeModifier, flags)
+                if (buf.ptr == 0L) {
+                    buf.destroy()
+                    send(event(1)) // failed
+                    return
+                }
+                client.register(buf)
+                send(event(0).obj(bufferId)) // created
+            }
+            3 -> { // create_immed
+                val bufferId = args.newId()
+                val width = args.int()
+                val height = args.int()
+                val format = args.uint()
+                val flags = args.uint()
+                if (used) return client.postError(id, 0, "already used")
+                used = true
+                val fd = planeFd
+                planeFd = -1
+                if (!planeAdded || fd < 0 || width <= 0 || height <= 0 || planeStride <= 0) {
+                    if (fd >= 0) Native.close(fd)
+                    return client.postError(id, 7, "invalid dmabuf buffer params")
+                }
+                val buf = DmabufBuffer(client, bufferId, fd, width, height, planeStride, planeOffset, format, planeModifier, flags)
+                if (buf.ptr == 0L) {
+                    buf.destroy()
+                    return client.postError(id, 7, "can't map dmabuf")
+                }
+                client.register(buf)
+            }
+        }
+    }
+
+    override fun onDestroy() {
+        if (planeFd >= 0) {
+            Native.close(planeFd)
+            planeFd = -1
+        }
+    }
 }
 
 class SubcompositorResource(

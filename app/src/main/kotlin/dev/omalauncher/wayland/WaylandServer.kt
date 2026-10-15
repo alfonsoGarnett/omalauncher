@@ -44,6 +44,7 @@ class WaylandServer(
             Global("wl_compositor", 4, ::CompositorResource),
             Global("wl_subcompositor", 1, ::SubcompositorResource),
             Global("wl_shm", 1, ::ShmResource),
+            Global("zwp_linux_dmabuf_v1", 3, ::LinuxDmabufResource),
             Global("wl_output", 3, ::OutputResource),
             Global("wl_seat", 5, ::SeatResource),
             Global("wl_data_device_manager", 3, ::DataDeviceManager),
