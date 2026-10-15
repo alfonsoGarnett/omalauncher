@@ -100,7 +100,7 @@ class Client(
 
     fun newServerId() = nextServerId++
 
-    inline fun <reified T : Resource> get(id: Int): T? = objects[id] as? T
+    inline fun <reified T> get(id: Int): T? = objects[id] as? T
 
     fun <T : Resource> register(resource: T): T {
         zombies.remove(resource.id)
