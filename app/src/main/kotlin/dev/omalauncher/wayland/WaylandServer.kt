@@ -101,7 +101,14 @@ class WaylandServer(
     fun updateOutput(info: OutputInfo) {
         if (info == output) return
         output = info
-        clients.forEach { c -> outputsOf(c).forEach { it.sendState() } }
+        clients.forEach { c ->
+            val toplevel = c.all(XdgToplevel::class.java).firstOrNull()
+            val layout = toplevel?.let { (windowManager as? dev.omalauncher.ui.WindowManager)?.windowLayout(it) }
+            if (layout != null && layout.isExternal && info.scale != layout.scale) {
+                return@forEach
+            }
+            outputsOf(c).forEach { it.sendState() }
+        }
     }
 
     /** The toplevel owning [surface], following subsurface and popup parents. */

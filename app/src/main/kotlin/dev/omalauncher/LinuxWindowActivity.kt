@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Typeface
+import android.os.Build
 import android.os.Bundle
 import android.view.InputDevice
 import android.view.KeyEvent
@@ -121,6 +122,11 @@ class LinuxWindowActivity : InstantActivity() {
         super.onDestroy()
         val w = window ?: return
         if (isFinishing && w in runtime.wm.appWindows) runtime.wm.close(w)
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        surfaceView?.post { surfaceView?.layoutWindow() }
     }
 
     // Lint flags super.dispatchKeyEvent: ComponentActivity marks its override @RestrictTo, but Activity's is public API.
@@ -391,11 +397,28 @@ private class WindowSurfaceView(
         return super.onTouchEvent(event)
     }
 
-    private fun layoutWindow() {
+    private fun currentScale(): Int {
+        if (isExternalDisplay()) return 1
+        return (context.resources.displayMetrics.density.toInt()).coerceIn(1, 4)
+    }
+
+    private fun isExternalDisplay(): Boolean {
+        return if (Build.VERSION.SDK_INT >= 30) {
+            (display?.displayId ?: 0) != 0
+        } else {
+            @Suppress("DEPRECATION")
+            (context.getSystemService(android.view.WindowManager::class.java)?.defaultDisplay?.displayId ?: 0) != 0
+        }
+    }
+
+    fun layoutWindow() {
         if (surfaceWidth == 0) return
         val h = if (visibleHeight in 1..surfaceHeight) visibleHeight else surfaceHeight
         renderer.visibleHeight = h
-        runtime.wm.applyAppLayout(window, surfaceWidth, h)
+        val s = currentScale()
+        renderer.scale = s
+        val external = isExternalDisplay()
+        runtime.wm.applyAppLayout(window, surfaceWidth, h, s, external)
     }
 
     init {
@@ -426,7 +449,23 @@ private class WindowSurfaceView(
     ) {
         surfaceWidth = width
         surfaceHeight = height
-        renderer.attach(holder.surface, width, height)
+        val s = currentScale()
+        val external = isExternalDisplay()
+        renderer.scale = s
+        renderer.attach(holder.surface, width, height, s)
+        if (external) {
+            val metrics = context.resources.displayMetrics
+            val mmPerPx = if (metrics.xdpi > 0) 25.4f / metrics.xdpi else 0.15f
+            runtime.server.updateOutput(
+                dev.omalauncher.wayland.OutputInfo(
+                    width,
+                    height,
+                    s,
+                    (width * mmPerPx).toInt(),
+                    (height * mmPerPx).toInt(),
+                ),
+            )
+        }
         layoutWindow()
     }
 

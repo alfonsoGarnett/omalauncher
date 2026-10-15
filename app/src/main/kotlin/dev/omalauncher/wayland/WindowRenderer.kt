@@ -65,6 +65,9 @@ class WindowRenderer(
     @Volatile
     var visibleHeight = 0
 
+    @Volatile
+    var scale: Int = server.output.scale
+
     private var drawn: List<Layer> = emptyList()
 
     @Volatile
@@ -82,8 +85,10 @@ class WindowRenderer(
         surface: android.view.Surface,
         w: Int,
         h: Int,
+        scale: Int = this.scale,
     ) {
         lock.withLock {
+            this.scale = scale
             if (native != 0L) Native.windowRelease(native)
             native = Native.windowCreate(surface, w, h)
             width = w
@@ -176,7 +181,7 @@ class WindowRenderer(
 
     /** The window's surfaces bottom to top, then its popups; call with the server locked. */
     private fun buildScene(): List<Layer> {
-        val scale = server.output.scale
+        val scale = this.scale
         val layers = ArrayList<Layer>()
         val g = window.xdg.effectiveGeometry
         addTree(layers, window.surface, -g.x * scale, -g.y * scale, scale, inPopup = false)

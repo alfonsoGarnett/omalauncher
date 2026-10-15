@@ -343,6 +343,7 @@ class Runtime(
      * the terminal font.
      */
     private fun updateOutput() {
+        if (wm.hasExternalWindow()) return
         val metrics = context.resources.displayMetrics
         val mmPerPx = 25.4f / metrics.xdpi
         val scale = outputScale()
