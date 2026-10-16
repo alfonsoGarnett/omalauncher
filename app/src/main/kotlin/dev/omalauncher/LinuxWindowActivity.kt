@@ -22,11 +22,17 @@ import kotlin.math.roundToInt
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imeAnimationTarget
@@ -69,6 +75,49 @@ class LinuxWindowActivity : InstantActivity() {
     private val runtime get() = (application as App).runtime
     private var window: XdgToplevel? = null
     private var surfaceView: WindowSurfaceView? = null
+    private val isPointerCaptured = mutableStateOf(false)
+
+    fun togglePointerCapture() {
+        val sv = surfaceView ?: return
+        if (sv.hasPointerCapture()) {
+            sv.releasePointerCapture()
+        } else {
+            sv.requestPointerCapture()
+        }
+    }
+
+    fun showDeXTaskbar() {
+        val sv = surfaceView
+        if (sv?.hasPointerCapture() == true) {
+            sv.releasePointerCapture()
+        }
+        if (Build.VERSION.SDK_INT >= 30) {
+            getWindow().insetsController?.show(
+                android.view.WindowInsets.Type.navigationBars() or android.view.WindowInsets.Type.statusBars()
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            getWindow().decorView.systemUiVisibility = android.view.View.SYSTEM_UI_FLAG_VISIBLE
+        }
+    }
+
+    override fun onPointerCaptureChanged(hasCapture: Boolean) {
+        super.onPointerCaptureChanged(hasCapture)
+        isPointerCaptured.value = hasCapture
+        surfaceView?.onCaptureChanged(hasCapture)
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (!hasFocus) {
+            surfaceView?.releasePointerCapture()
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        surfaceView?.releasePointerCapture()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -89,7 +138,17 @@ class LinuxWindowActivity : InstantActivity() {
         }
         setInstantContent {
             LaunchedEffect(Palette.isLight) { applySystemBars(this@LinuxWindowActivity, Palette.isLight) }
-            AppWindow(runtime, window) { surfaceView = it }
+            AppWindow(
+                runtime = runtime,
+                window = window,
+                isPointerCaptured = isPointerCaptured.value,
+                onTogglePointerCapture = { togglePointerCapture() },
+                onShowDeXTaskbar = { showDeXTaskbar() },
+            ) { sv ->
+                surfaceView = sv
+                sv.onRequestToggleCapture = { togglePointerCapture() }
+                sv.onRequestShowDeXTaskbar = { showDeXTaskbar() }
+            }
             BackHandler { backInstantly() }
             LaunchedEffect(window) {
                 snapshotFlow { window in runtime.wm.appWindows }.first { !it }
@@ -132,6 +191,16 @@ class LinuxWindowActivity : InstantActivity() {
     // Lint flags super.dispatchKeyEvent: ComponentActivity marks its override @RestrictTo, but Activity's is public API.
     @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN) {
+            val isCtrl = event.isCtrlPressed
+            val isAlt = event.isAltPressed
+            val isMeta = event.isMetaPressed
+            if ((isCtrl && isAlt && (event.keyCode == KeyEvent.KEYCODE_M || event.keyCode == KeyEvent.KEYCODE_P)) ||
+                (isMeta && event.keyCode == KeyEvent.KEYCODE_ESCAPE)) {
+                togglePointerCapture()
+                return true
+            }
+        }
         if (runtime.keyboard.handle(event)) return true
         return super.dispatchKeyEvent(event)
     }
@@ -139,8 +208,12 @@ class LinuxWindowActivity : InstantActivity() {
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         if (event.isFromSource(InputDevice.SOURCE_MOUSE)) {
             val sv = surfaceView
-            if (sv != null && sv.handleMouseTouch(event)) {
+            if (sv != null && !sv.hasPointerCapture() && sv.handleMouseTouch(event)) {
                 return true
+            }
+        } else if (event.isFromSource(InputDevice.SOURCE_TOUCHSCREEN)) {
+            if (surfaceView?.hasPointerCapture() == true) {
+                surfaceView?.releasePointerCapture()
             }
         }
         return super.dispatchTouchEvent(event)
@@ -200,6 +273,9 @@ internal fun taskIcon(
 private fun AppWindow(
     runtime: Runtime,
     window: XdgToplevel,
+    isPointerCaptured: Boolean,
+    onTogglePointerCapture: () -> Unit,
+    onShowDeXTaskbar: () -> Unit,
     onSurfaceViewCreated: (WindowSurfaceView) -> Unit = {},
 ) {
     var sink by remember { mutableStateOf<KeyboardSink?>(null) }
@@ -244,16 +320,72 @@ private fun AppWindow(
             ) {
                 // Over the SurfaceView, which Compose's pointer input doesn't reach.
                 Box(Modifier.fillMaxSize().linuxWindowInput(runtime.wm, window))
-                Box(
-                    Modifier
+
+                // Floating Toolbar
+                Row(
+                    modifier = Modifier
                         .align(Alignment.BottomEnd)
                         .padding(12.dp)
-                        .size(40.dp)
                         .background(Palette.overlay, CircleShape)
-                        .clickable { sink?.toggle() },
-                    contentAlignment = Alignment.Center,
+                        .padding(horizontal = 6.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    BasicText("⌨", style = Mono.copy(color = Palette.foreground))
+                    // 1. DeX Taskbar on demand button
+                    Box(
+                        Modifier
+                            .size(32.dp)
+                            .background(Color.Transparent, CircleShape)
+                            .clickable { onShowDeXTaskbar() }
+                            .onGloballyPositioned { coordinates ->
+                                val bounds = coordinates.boundsInWindow()
+                                surfaceView?.dexTaskbarButtonRect = android.graphics.Rect(
+                                    bounds.left.toInt(), bounds.top.toInt(),
+                                    bounds.right.toInt(), bounds.bottom.toInt(),
+                                )
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        BasicText("⊞", style = Mono.copy(color = Palette.foreground, fontSize = 16.sp))
+                    }
+
+                    // 2. Pointer Capture Toggle button
+                    Box(
+                        Modifier
+                            .size(32.dp)
+                            .background(
+                                if (isPointerCaptured) Palette.accent else Color.Transparent,
+                                CircleShape,
+                            )
+                            .clickable { onTogglePointerCapture() }
+                            .onGloballyPositioned { coordinates ->
+                                val bounds = coordinates.boundsInWindow()
+                                surfaceView?.captureButtonRect = android.graphics.Rect(
+                                    bounds.left.toInt(), bounds.top.toInt(),
+                                    bounds.right.toInt(), bounds.bottom.toInt(),
+                                )
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        BasicText(
+                            if (isPointerCaptured) "🎯" else "🖱",
+                            style = Mono.copy(
+                                color = if (isPointerCaptured) Palette.background else Palette.foreground,
+                                fontSize = 14.sp,
+                            ),
+                        )
+                    }
+
+                    // 3. Virtual Keyboard toggle button
+                    Box(
+                        Modifier
+                            .size(32.dp)
+                            .background(Color.Transparent, CircleShape)
+                            .clickable { sink?.toggle() },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        BasicText("⌨", style = Mono.copy(color = Palette.foreground, fontSize = 14.sp))
+                    }
                 }
             }
             // Below the window rather than over it, so the window shrinks and nothing hides behind the keys; only over a
@@ -284,6 +416,11 @@ private class WindowSurfaceView(
     private var cursorY = 0f
     private var capturedButtons = 0
 
+    var captureButtonRect: android.graphics.Rect? = null
+    var dexTaskbarButtonRect: android.graphics.Rect? = null
+    var onRequestToggleCapture: (() -> Unit)? = null
+    var onRequestShowDeXTaskbar: (() -> Unit)? = null
+
     /** How much of the view, from its top, the keyboard and the extra keys leave the window; 0 for all of it. */
     var visibleHeight = 0
         set(value) {
@@ -292,7 +429,76 @@ private class WindowSurfaceView(
             layoutWindow()
         }
 
+    fun onCaptureChanged(hasCapture: Boolean) {
+        if (!hasCapture) {
+            capturedButtons = 0
+            updateButtons(0)
+        }
+    }
+
+    override fun onCapturedPointerEvent(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_MOVE -> {
+                val dx = event.getAxisValue(MotionEvent.AXIS_RELATIVE_X)
+                val dy = event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y)
+                val maxH = if (visibleHeight in 1..surfaceHeight) visibleHeight else surfaceHeight
+                cursorX = (cursorX + dx).coerceIn(0f, surfaceWidth.toFloat())
+                cursorY = (cursorY + dy).coerceIn(0f, maxH.toFloat())
+                val hit = renderer.hitTest(cursorX, cursorY)
+                if (hit != null) {
+                    runtime.wm.pointerMove(hit)
+                }
+            }
+            MotionEvent.ACTION_SCROLL -> {
+                val vScroll = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
+                val hScroll = event.getAxisValue(MotionEvent.AXIS_HSCROLL)
+                if (vScroll != 0f || hScroll != 0f) {
+                    val dy = -vScroll * 15f
+                    val dx = -hScroll * 15f
+                    val steps = (-vScroll).roundToInt()
+                    runtime.wm.scroll(dx, dy, AXIS_SOURCE_WHEEL, steps)
+                }
+            }
+        }
+
+        val currentButtons = event.buttonState
+        val pressed = currentButtons and capturedButtons.inv()
+        val released = capturedButtons and currentButtons.inv()
+
+        if (pressed != 0) {
+            if (pressed and MotionEvent.BUTTON_PRIMARY != 0) {
+                val xInt = cursorX.toInt()
+                val yInt = cursorY.toInt()
+                if (captureButtonRect?.contains(xInt, yInt) == true) {
+                    onRequestToggleCapture?.invoke()
+                    return true
+                }
+                if (dexTaskbarButtonRect?.contains(xInt, yInt) == true) {
+                    onRequestShowDeXTaskbar?.invoke()
+                    return true
+                }
+            }
+            val hit = renderer.hitTest(cursorX, cursorY)
+            if (hit != null) {
+                runtime.wm.onPress(window, hit)
+            }
+            if (pressed and MotionEvent.BUTTON_PRIMARY != 0) runtime.wm.pointerButton(BTN_LEFT, true)
+            if (pressed and MotionEvent.BUTTON_SECONDARY != 0) runtime.wm.pointerButton(BTN_RIGHT, true)
+            if (pressed and MotionEvent.BUTTON_TERTIARY != 0) runtime.wm.pointerButton(BTN_MIDDLE, true)
+        }
+        if (released != 0) {
+            if (released and MotionEvent.BUTTON_PRIMARY != 0) runtime.wm.pointerButton(BTN_LEFT, false)
+            if (released and MotionEvent.BUTTON_SECONDARY != 0) runtime.wm.pointerButton(BTN_RIGHT, false)
+            if (released and MotionEvent.BUTTON_TERTIARY != 0) runtime.wm.pointerButton(BTN_MIDDLE, false)
+        }
+
+        capturedButtons = currentButtons
+        return true
+    }
+
     fun handleHover(event: MotionEvent): Boolean {
+        cursorX = event.x
+        cursorY = event.y
         when (event.actionMasked) {
             MotionEvent.ACTION_HOVER_MOVE, MotionEvent.ACTION_HOVER_ENTER -> {
                 val hit = renderer.hitTest(event.x, event.y)
@@ -327,6 +533,8 @@ private class WindowSurfaceView(
     }
 
     fun handleMouseTouch(event: MotionEvent): Boolean {
+        cursorX = event.x
+        cursorY = event.y
         val hit = renderer.hitTest(event.x, event.y)
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
