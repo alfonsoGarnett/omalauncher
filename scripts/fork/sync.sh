@@ -5,6 +5,12 @@
 #   scripts/fork/sync.sh --build    ... then build the debug APK
 #   scripts/fork/sync.sh --install  ... then build and install it over adb (restarts the launcher and any Linux
 #                                   session inside it, so run it last)
+#   scripts/fork/sync.sh --backup   ... and push the branches to GitHub: code to the public fork (remote "fork"),
+#                                   fork/docs and fork/personal to the private repo (remote "private")
+#
+# First, scripts/fork/save-snapshots.py saves the files listed in scripts/fork/snapshots.conf into their branches
+# (fork/docs, fork/personal, env/omarchy-dex). After a build, scripts/fork/install-guest-tools.sh installs the
+# guest/ tools of local/build into this system.
 #
 # main mirrors upstream and never gets commits of its own. Topic branches (scripts/fork/topics) are rebased onto
 # it; local/build is recreated as main plus a --no-ff merge of each, in that file's order. git rerere replays
@@ -19,16 +25,14 @@ if [ -z "${FORK_SYNC_COPY:-}" ]; then
 fi
 
 cd "$(git rev-parse --show-toplevel)"
-build=0; install=0
-for a in "$@"; do case "$a" in --build) build=1 ;; --install) build=1; install=1 ;; *) echo "unknown option $a" >&2; exit 2 ;; esac; done
+build=0; install=0; backup=0
+for a in "$@"; do case "$a" in --build) build=1 ;; --install) build=1; install=1 ;; --backup) backup=1 ;; *) echo "unknown option $a" >&2; exit 2 ;; esac; done
 
 [ -z "$(git status --porcelain --untracked-files=no)" ] || { echo "Commit or stash your changes first." >&2; exit 1; }
 git config rerere.enabled true; git config rerere.autoUpdate true
 
-# The agent instructions and fork log, saved on fork/twin-app before it's rebased.
-if git cat-file -e fork/twin-app:scripts/fork/save-docs.sh 2>/dev/null; then
-  bash <(git show fork/twin-app:scripts/fork/save-docs.sh)
-fi
+# Our documents, personal files and the DeX desktop, saved into their branches.
+python3 <(git show fork/twin-app:scripts/fork/save-snapshots.py)
 
 topics=$(git show fork/twin-app:scripts/fork/topics | grep -v '^\s*#' | grep -v '^\s*$')
 stamp=$(date +%Y%m%d-%H%M)
@@ -91,6 +95,29 @@ if [ $build = 1 ]; then
   ./gradlew assembleDebug --console=plain -q
   ls -la app/build/outputs/apk/debug/app-debug.apk
 fi
+if [ $build = 1 ]; then
+  bash scripts/fork/install-guest-tools.sh
+fi
+
+if [ $backup = 1 ]; then
+  # Branches with an open upstream PR are left alone: pushing a rebased one would change the PR. Push those on purpose.
+  in_pr=$(gh pr list --repo SimonSchubert/omalauncher --author @me --state open --json headRefName -q '.[].headRefName' 2>/dev/null || true)
+  public=(main fork/twin-app local/build env/omarchy-dex)
+  while read -r b base; do public+=("$b"); done <<< "$topics"
+  echo "== backing up to the public fork"
+  for b in "${public[@]}"; do
+    case "$b" in fork/docs|fork/personal) echo "refusing to push $b to the public fork" >&2; exit 1 ;; esac
+    if grep -qx "$b" <<< "$in_pr"; then echo "  $b: open PR, not pushed"; continue; fi
+    git rev-parse --verify -q "refs/heads/$b" >/dev/null || continue
+    git push -q --force-with-lease fork "refs/heads/$b:refs/heads/$b" && echo "  $b"
+  done
+  echo "== backing up to the private repo"
+  for b in fork/docs fork/personal; do
+    git rev-parse --verify -q "refs/heads/$b" >/dev/null || continue
+    git push -q --force-with-lease private "refs/heads/$b:refs/heads/$b" && echo "  $b"
+  done
+fi
+
 if [ $install = 1 ]; then
   dev=$(droid | awk '{print $1}')
   echo "== installing on $dev (the launcher restarts)"
