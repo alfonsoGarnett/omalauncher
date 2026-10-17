@@ -1,0 +1,11 @@
+# The fork's branches, in merge order for local/build. One per line: <branch> [<branch it's stacked on>]
+# A branch with no base sits directly on main (= upstream's origin/main).
+fork/twin-app
+feat/android-bridge
+feat/metrics-network
+feat/caps-lock-sync
+feat/notification-swipe
+feat/screens-overview feat/notification-swipe
+feat/desktop-mode
+feat/wayland-dmabuf
+feat/linux-shared-storage
