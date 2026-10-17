@@ -9,3 +9,4 @@ feat/screens-overview feat/notification-swipe
 feat/desktop-mode
 feat/wayland-dmabuf
 feat/linux-shared-storage
+fix/gpu-mesa-bundle-verify
