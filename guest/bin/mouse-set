@@ -1,0 +1,55 @@
+#!/bin/bash
+# mouse-set: change a setting in the launcher's mouse.conf (desktop mode reloads it live).
+#   mouse-set <pointer_speed|scroll_speed|natural_scroll> <value>
+# pointer_speed and scroll_speed are multipliers (0.1 to 10, 1 by default); natural_scroll is 1 or 0.
+# A running Sway session gets the scroll settings too.
+CONF="${HOME:-/root}/.config/omalauncher/mouse.conf"
+
+key="$1"
+val="$2"
+
+if [ -z "$key" ] || [ -z "$val" ]; then
+    echo "Usage: mouse-set <pointer_speed|scroll_speed|natural_scroll> <value>"
+    exit 1
+fi
+
+case "$key" in
+    pointer_speed|speed)
+        key="pointer_speed"
+        ;;
+    scroll_speed|scroll)
+        key="scroll_speed"
+        ;;
+    natural_scroll|natural)
+        key="natural_scroll"
+        ;;
+    *)
+        echo "Unknown setting: $key"
+        exit 1
+        ;;
+esac
+
+mkdir -p "$(dirname "$CONF")"
+if grep -q "^${key}=" "$CONF" 2>/dev/null; then
+    sed -i "s/^${key}=.*/${key}=${val}/" "$CONF"
+else
+    echo "${key}=${val}" >> "$CONF"
+fi
+
+# Tell Sway, if it's running
+sway_pid=$(pgrep -x sway 2>/dev/null | head -n1)
+if [ -n "$sway_pid" ] && [ -S "/run/user/0/sway-ipc.0.${sway_pid}.sock" ]; then
+    export SWAYSOCK="/run/user/0/sway-ipc.0.${sway_pid}.sock"
+elif [ -z "$SWAYSOCK" ] || [ ! -S "$SWAYSOCK" ]; then
+    latest_sock=$(ls -t /run/user/0/sway-ipc.*.sock 2>/dev/null | head -n1)
+    [ -n "$latest_sock" ] && export SWAYSOCK="$latest_sock"
+fi
+
+if [ -n "$SWAYSOCK" ] && [ -S "$SWAYSOCK" ]; then
+    if [ "$key" = "scroll_speed" ]; then
+        swaymsg input "type:pointer" scroll_factor "$val" >/dev/null 2>&1 || true
+    elif [ "$key" = "natural_scroll" ]; then
+        [ "$val" = "1" ] && nat="enabled" || nat="disabled"
+        swaymsg input "type:pointer" natural_scroll "$nat" >/dev/null 2>&1 || true
+    fi
+fi
