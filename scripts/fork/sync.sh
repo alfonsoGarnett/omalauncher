@@ -25,6 +25,11 @@ for a in "$@"; do case "$a" in --build) build=1 ;; --install) build=1; install=1
 [ -z "$(git status --porcelain --untracked-files=no)" ] || { echo "Commit or stash your changes first." >&2; exit 1; }
 git config rerere.enabled true; git config rerere.autoUpdate true
 
+# The agent instructions and fork log, saved on fork/twin-app before it's rebased.
+if git cat-file -e fork/twin-app:scripts/fork/save-docs.sh 2>/dev/null; then
+  bash <(git show fork/twin-app:scripts/fork/save-docs.sh)
+fi
+
 topics=$(git show fork/twin-app:scripts/fork/topics | grep -v '^\s*#' | grep -v '^\s*$')
 stamp=$(date +%Y%m%d-%H%M)
 
