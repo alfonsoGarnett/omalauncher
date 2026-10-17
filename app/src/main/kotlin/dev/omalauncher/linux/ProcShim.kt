@@ -1,5 +1,6 @@
 package dev.omalauncher.linux
 
+import android.net.TrafficStats
 import android.os.SystemClock
 import java.io.File
 import java.util.Locale
@@ -21,12 +22,13 @@ class ProcShim(
 
     /** Names of the /proc files we can't read directly. */
     private val hidden: Set<String> by lazy {
-        listOf("stat", "uptime", "loadavg", "version", "vmstat").filterNot { readable("/proc/$it") }.toSet()
+        listOf("stat", "uptime", "loadavg", "version", "vmstat", "net/dev").filterNot { readable("/proc/$it") }.toSet()
     }
 
     /** Guest path -> host stand-in, only for files we can't read directly. */
     val binds: Map<String, File> by lazy {
         dir.mkdirs()
+        File(dir, "net").mkdirs()
         update()
         hidden.associate { "/proc/$it" to File(dir, it) }
     }
@@ -79,6 +81,26 @@ class ProcShim(
         write("loadavg") { "0.00 0.00 0.00 1/1 1\n" }
         write("version") { "Linux version $kernel (android) #1 SMP PREEMPT\n" }
         write("vmstat") { "pgpgin 0\npgpgout 0\npswpin 0\npswpout 0\n" }
+        write("net/dev") {
+            val totalRx = TrafficStats.getTotalRxBytes()
+            val totalTx = TrafficStats.getTotalTxBytes()
+            val mobileRx = TrafficStats.getMobileRxBytes()
+            val mobileTx = TrafficStats.getMobileTxBytes()
+            val rxTot = if (totalRx != TrafficStats.UNSUPPORTED.toLong()) totalRx else 0L
+            val txTot = if (totalTx != TrafficStats.UNSUPPORTED.toLong()) totalTx else 0L
+            val rxMob = if (mobileRx != TrafficStats.UNSUPPORTED.toLong()) mobileRx else 0L
+            val txMob = if (mobileTx != TrafficStats.UNSUPPORTED.toLong()) mobileTx else 0L
+            val rxWifi = (rxTot - rxMob).coerceAtLeast(0L)
+            val txWifi = (txTot - txMob).coerceAtLeast(0L)
+
+            buildString {
+                appendLine("Inter-|   Receive                                                |  Transmit")
+                appendLine(" face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed")
+                appendLine("    lo:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0")
+                appendLine(" wlan0: %7d       0    0    0    0     0          0         0  %7d       0    0    0    0     0       0          0".format(Locale.ROOT, rxWifi, txWifi))
+                appendLine("rmnet0: %7d       0    0    0    0     0          0         0  %7d       0    0    0    0     0       0          0".format(Locale.ROOT, rxMob, txMob))
+            }
+        }
     }
 
     /** Sums utime/stime over all processes we can see, which Android limits to our own uid. */
@@ -100,8 +122,10 @@ class ProcShim(
         content: () -> String,
     ) {
         if (name !in hidden) return
-        val tmp = File(dir, "$name.tmp")
+        val target = File(dir, name)
+        target.parentFile?.mkdirs()
+        val tmp = File(target.parentFile, "${target.name}.tmp")
         tmp.writeText(content())
-        tmp.renameTo(File(dir, name))
+        tmp.renameTo(target)
     }
 }
