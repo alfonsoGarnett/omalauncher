@@ -28,9 +28,9 @@ android {
 
     buildFeatures { buildConfig = true }
 
-    externalNativeBuild {
-        cmake { path = file("src/main/cpp/CMakeLists.txt") }
-    }
+    // externalNativeBuild {
+    //     cmake { path = file("src/main/cpp/CMakeLists.txt") }
+    // }
 
     packaging {
         jniLibs {
