@@ -1,6 +1,7 @@
 package dev.omalauncher.ui
 
 import android.content.Context
+import android.util.Log
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
@@ -10,8 +11,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -35,6 +36,7 @@ enum class GestureAction(
     val label: String,
 ) {
     Drawer("drawer", "app drawer"),
+    Notifications("notifications", "notifications"),
     None("none", "nothing"),
     ;
 
@@ -43,15 +45,16 @@ enum class GestureAction(
     }
 }
 
-/** The actions picked for home's gestures. Swiping up is the only one so far. */
+/** The actions picked for home's gestures: swipe up and swipe down. */
 class Gestures(
-    context: Context,
+    private val context: Context,
 ) {
     private val prefs = LauncherData.prefs(context)
 
     private var up by mutableStateOf(GestureAction.of(prefs.getString(SWIPE_UP, null)) ?: GestureAction.Drawer)
+    private var down by mutableStateOf(GestureAction.of(prefs.getString(SWIPE_DOWN, null)) ?: GestureAction.Notifications)
 
-    /** The app drawer by default, like stock launchers. Saved as it's set. */
+    /** What swiping up on home does. Default: app drawer. */
     var swipeUp: GestureAction
         get() = up
         set(action) {
@@ -59,15 +62,35 @@ class Gestures(
             prefs.edit().putString(SWIPE_UP, action.id).apply()
         }
 
+    /** What swiping down on home does. Default: notifications. */
+    var swipeDown: GestureAction
+        get() = down
+        set(action) {
+            down = action
+            prefs.edit().putString(SWIPE_DOWN, action.id).apply()
+        }
+
+    fun openNotifications() {
+        try {
+            val service = context.getSystemService("statusbar")
+            val statusbarManager = Class.forName("android.app.StatusBarManager")
+            val expand = statusbarManager.getMethod("expandNotificationsPanel")
+            expand.invoke(service)
+        } catch (e: Exception) {
+            Log.w(TAG, "Cannot expand notifications panel", e)
+        }
+    }
+
     private companion object {
+        const val TAG = "Gestures"
         const val SWIPE_UP = "gesture_swipe_up"
+        const val SWIPE_DOWN = "gesture_swipe_down"
     }
 }
 
 /**
  * Dragging up opens the drawer under the finger and dragging down closes it, as on stock launchers: the panel
- * follows the drag and a fling or how far it got decides where it settles. Scrollables inside (a widget's
- * list, the recent apps strip) take their own direction first.
+ * follows the drag and a fling or how far it got decides where it settles.
  */
 @Composable
 internal fun Modifier.drawerSwipe(
@@ -84,8 +107,8 @@ internal fun Modifier.drawerSwipe(
 }
 
 /**
- * Swiping up on home (the pages, the recent apps strip, the bar) does what's picked in gesture settings. With
- * the drawer open, the swipe drags it whatever the setting, so it can still be pulled closed.
+ * Swiping up/down on home does what's picked in gesture settings. With
+ * the drawer open, vertical drag moves the drawer so it can still be pulled closed.
  */
 @Composable
 internal fun Modifier.homeSwipe(
@@ -93,19 +116,60 @@ internal fun Modifier.homeSwipe(
     state: LauncherState,
     enabled: Boolean = true,
 ): Modifier {
-    val drawerShown by remember(state) { derivedStateOf { state.drawer.value > 0f } }
-    // Whether the drawer shows is only read when it matters: read here, it would recompose all of home (its Box is
-    // inline) each time the drawer opens or closes.
-    val drags =
-        when (runtime.gestures.swipeUp) {
-            GestureAction.Drawer -> true
-            GestureAction.None -> drawerShown
-        }
-    // One drag handler, only turned on or off: a new one mid-swipe (as the drawer starts to show) would drop the drag.
-    return drawerSwipe(state, enabled && drags)
+    val screenHeight = with(LocalDensity.current) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
+    val dragThreshold = with(LocalDensity.current) { 45.dp.toPx() }
+
+    var totalDownDrag by remember { mutableFloatStateOf(0f) }
+    var triggeredDown by remember { mutableStateOf(false) }
+
+    return draggable(
+        orientation = Orientation.Vertical,
+        enabled = enabled,
+        state = rememberDraggableState { dy ->
+            if (state.drawer.value > 0f) {
+                state.dragBy(-dy / screenHeight)
+            } else if (dy < 0) {
+                // Dragging UP
+                if (runtime.gestures.swipeUp == GestureAction.Drawer) {
+                    state.dragBy(-dy / screenHeight)
+                }
+            } else if (dy > 0) {
+                // Dragging DOWN
+                if (runtime.gestures.swipeDown == GestureAction.Notifications) {
+                    totalDownDrag += dy
+                    if (!triggeredDown && totalDownDrag > dragThreshold) {
+                        triggeredDown = true
+                        runtime.gestures.openNotifications()
+                    }
+                } else if (runtime.gestures.swipeDown == GestureAction.Drawer) {
+                    state.dragBy(dy / screenHeight)
+                }
+            }
+        },
+        onDragStarted = {
+            totalDownDrag = 0f
+            triggeredDown = false
+        },
+        onDragStopped = { velocity ->
+            if (state.drawer.value > 0f) {
+                state.settle(velocity)
+            } else {
+                if (velocity > 600f && !triggeredDown && runtime.gestures.swipeDown == GestureAction.Notifications) {
+                    triggeredDown = true
+                    runtime.gestures.openNotifications()
+                } else if (velocity < -800f && runtime.gestures.swipeUp == GestureAction.Notifications) {
+                    runtime.gestures.openNotifications()
+                } else if (velocity < -800f && runtime.gestures.swipeUp == GestureAction.Drawer) {
+                    state.open()
+                }
+            }
+            totalDownDrag = 0f
+            triggeredDown = false
+        },
+    )
 }
 
-/** Gesture settings: what swiping up on home does, picked from a dropdown. */
+/** Gesture settings: what swiping up and down on home does, picked from dropdowns. */
 @Composable
 fun GesturesScreen(
     runtime: Runtime,
@@ -114,6 +178,9 @@ fun GesturesScreen(
     val gestures = runtime.gestures
     OverlayPanel("gestures", onDismiss, contentWidth = ReadingWidth) {
         GestureRow("swipe up", gestures.swipeUp) { gestures.swipeUp = it }
+        Box(Modifier.padding(top = 12.dp)) {
+            GestureRow("swipe down", gestures.swipeDown) { gestures.swipeDown = it }
+        }
     }
 }
 
