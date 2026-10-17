@@ -18,7 +18,7 @@ android {
     ndkVersion = prootNdk
 
     defaultConfig {
-        applicationId = "dev.omalauncher"
+        applicationId = "dev.omalauncher.mod"
         minSdk = 29
         targetSdk = 37
         versionCode = 16
@@ -28,15 +28,17 @@ android {
 
     buildFeatures { buildConfig = true }
 
-    externalNativeBuild {
-        cmake { path = file("src/main/cpp/CMakeLists.txt") }
-    }
+    // externalNativeBuild {
+    //     cmake { path = file("src/main/cpp/CMakeLists.txt") }
+    // }
 
     packaging {
         jniLibs {
             // Extract .so files to nativeLibraryDir: proot is exec'd from there.
             useLegacyPackaging = true
             keepDebugSymbols += listOf("**/libproot.so", "**/libproot-loader.so")
+            // Fork: the NDK's llvm-strip is an x86-64 binary that can't run on the ARM64 host this builds on.
+            keepDebugSymbols += "**/*.so"
         }
     }
 
@@ -44,6 +46,12 @@ android {
     testOptions { unitTests.isReturnDefaultValues = true }
 
     signingConfigs {
+        getByName("debug") {
+            storeFile = rootProject.file("mod-debug.keystore")
+            storePassword = "android"
+            keyAlias = "mod-debug"
+            keyPassword = "android"
+        }
         create("release") {
             uploadKey?.let {
                 storeFile = rootProject.file(it.getProperty("storeFile"))
