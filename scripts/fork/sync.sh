@@ -10,7 +10,8 @@
 #
 # First, scripts/fork/save-snapshots.py saves the files listed in scripts/fork/snapshots.conf into their branches
 # (fork/docs, fork/personal, env/omarchy-dex). After a build, scripts/fork/install-guest-tools.sh installs the
-# guest/ tools of local/build into this system.
+# guest/ tools of local/build into this system. Backup tags (backup/...) whose name carries a date (-YYYYMMDD)
+# more than a week old are deleted at the start; name hand-made backup tags the same way.
 #
 # main mirrors upstream and never gets commits of its own. Topic branches (scripts/fork/topics) are rebased onto
 # it; local/build is recreated as main plus a --no-ff merge of each, in that file's order. git rerere replays
@@ -36,6 +37,17 @@ python3 <(git show fork/twin-app:scripts/fork/save-snapshots.py)
 
 topics=$(git show fork/twin-app:scripts/fork/topics | grep -v '^\s*#' | grep -v '^\s*$')
 stamp=$(date +%Y%m%d-%H%M)
+
+# Backup tags more than a week old, by the date in their name.
+cutoff=$(date -d '7 days ago' +%Y%m%d)
+old_tags=$(git tag -l 'backup/*' | while read -r t; do
+  d=$(grep -oE -- '-20[0-9]{6}' <<< "$t" | head -n1 | tr -d -)
+  [ -n "$d" ] && [ "$d" -lt "$cutoff" ] && echo "$t"
+done || true)
+if [ -n "$old_tags" ]; then
+  echo "$old_tags" | xargs git tag -d >/dev/null
+  echo "removed $(echo "$old_tags" | wc -l) backup tags older than a week"
+fi
 
 echo "== fetching upstream"
 git fetch origin
