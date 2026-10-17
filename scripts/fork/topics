@@ -5,7 +5,7 @@ feat/android-bridge
 feat/metrics-network
 feat/caps-lock-sync
 feat/notification-swipe
-feat/screens-overview feat/notification-swipe
+feat/screens-overview
 feat/desktop-mode
 feat/wayland-dmabuf
 feat/linux-shared-storage
