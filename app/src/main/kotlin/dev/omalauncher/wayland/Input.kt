@@ -218,6 +218,9 @@ class Input(
         source: Int,
         steps: Int = 0,
     ) {
+        if (pointerFocus == null && keyboardFocus != null) {
+            pointerMotion(keyboardFocus, 0f, 0f)
+        }
         val s = pointerFocus ?: return
         val time = now()
         pointersOf(s.client).forEach { p ->

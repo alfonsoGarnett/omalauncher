@@ -7,9 +7,17 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Typeface
 import android.os.Bundle
+import android.view.InputDevice
 import android.view.KeyEvent
+import android.view.MotionEvent
+import android.view.PointerIcon
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import dev.omalauncher.wayland.AXIS_SOURCE_WHEEL
+import dev.omalauncher.wayland.BTN_LEFT
+import dev.omalauncher.wayland.BTN_RIGHT
+import dev.omalauncher.wayland.BTN_MIDDLE
+import kotlin.math.roundToInt
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -61,6 +69,28 @@ class LinuxWindowActivity : InstantActivity() {
     private var window: XdgToplevel? = null
     private val imagePicker = ImagePicker(this) { runtime }
     private val mic = MicPermission(this)
+    private var surfaceView: WindowSurfaceView? = null
+
+    fun togglePointerCapture() {
+        val sv = surfaceView ?: return
+        if (sv.hasPointerCapture()) {
+            sv.releasePointerCapture()
+        } else {
+            sv.requestPointerCapture()
+        }
+    }
+
+    override fun onPointerCaptureChanged(hasCapture: Boolean) {
+        super.onPointerCaptureChanged(hasCapture)
+        surfaceView?.onCaptureChanged(hasCapture)
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (!hasFocus) {
+            surfaceView?.releasePointerCapture()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -72,7 +102,7 @@ class LinuxWindowActivity : InstantActivity() {
         }
         this.window = window
         setInstantContent {
-            AppWindow(runtime, window)
+            AppWindow(runtime, window) { surfaceView = it }
             BackHandler { backInstantly() }
             LaunchedEffect(window) {
                 snapshotFlow { window in runtime.wm.appWindows }.first { !it }
@@ -117,6 +147,10 @@ class LinuxWindowActivity : InstantActivity() {
             if (event.repeatCount == 0) backInstantly()
             return true
         }
+        if (event.action == KeyEvent.ACTION_DOWN && event.isCtrlPressed && event.isAltPressed && event.keyCode == KeyEvent.KEYCODE_G) {
+            togglePointerCapture()
+            return true
+        }
         if (runtime.keyboard.handle(event)) return true
         return super.dispatchKeyEvent(event)
     }
@@ -127,6 +161,50 @@ class LinuxWindowActivity : InstantActivity() {
         runtime.keyboard.releaseHeld()
         if (runtime.keyboard.imagePicker === imagePicker) runtime.keyboard.imagePicker = null
         runtime.dictation.askMic = null
+        surfaceView?.releasePointerCapture()
+    }
+
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (event.isFromSource(InputDevice.SOURCE_MOUSE)) {
+            if (event.action == MotionEvent.ACTION_DOWN && surfaceView?.hasPointerCapture() == false) {
+                surfaceView?.requestPointerCapture()
+            }
+        } else if (event.isFromSource(InputDevice.SOURCE_TOUCHSCREEN)) {
+            if (surfaceView?.hasPointerCapture() == true) {
+                surfaceView?.releasePointerCapture()
+            }
+        }
+        return super.dispatchTouchEvent(event)
+    }
+
+    override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
+        if (event.isFromSource(InputDevice.SOURCE_CLASS_POINTER)) {
+            when (event.action) {
+                MotionEvent.ACTION_SCROLL -> {
+                    val hit = window?.renderer?.hitTest(event.x, event.y)
+                    if (hit != null) {
+                        runtime.wm.pointerMove(hit)
+                    }
+                    val vScroll = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
+                    val hScroll = event.getAxisValue(MotionEvent.AXIS_HSCROLL)
+                    if (vScroll != 0f || hScroll != 0f) {
+                        val dy = -vScroll * 15f
+                        val dx = -hScroll * 15f
+                        val steps = (-vScroll).roundToInt()
+                        runtime.wm.scroll(dx, dy, AXIS_SOURCE_WHEEL, steps)
+                        return true
+                    }
+                }
+                MotionEvent.ACTION_HOVER_MOVE -> {
+                    surfaceView?.updateHover(event.x, event.y)
+                    val hit = window?.renderer?.hitTest(event.x, event.y)
+                    if (hit != null) {
+                        runtime.wm.pointerMove(hit)
+                    }
+                }
+            }
+        }
+        return super.dispatchGenericMotionEvent(event)
     }
 }
 
@@ -167,6 +245,7 @@ internal fun taskIcon(
 private fun AppWindow(
     runtime: Runtime,
     window: XdgToplevel,
+    onSurfaceViewCreated: (WindowSurfaceView) -> Unit = {},
 ) {
     var sink by remember { mutableStateOf<KeyboardSink?>(null) }
     var surfaceView by remember { mutableStateOf<WindowSurfaceView?>(null) }
@@ -189,7 +268,12 @@ private fun AppWindow(
         // Always the whole screen: a SurfaceView that changes size shows its last frame stretched until the next one,
         // so the keyboard and the extra keys go over it, and only the Linux window gets smaller.
         AndroidView(
-            factory = { context -> WindowSurfaceView(context, runtime, window).also { surfaceView = it } },
+            factory = { context ->
+                WindowSurfaceView(context, runtime, window).also {
+                    surfaceView = it
+                    onSurfaceViewCreated(it)
+                }
+            },
             update = { it.background = background },
             modifier = Modifier.fillMaxSize(),
         )
@@ -242,6 +326,9 @@ private class WindowSurfaceView(
 
     private var surfaceWidth = 0
     private var surfaceHeight = 0
+    private var cursorX = 0f
+    private var cursorY = 0f
+    private var capturedButtons = 0
 
     /** How much of the view, from its top, the keyboard and the extra keys leave the window; 0 for all of it. */
     var visibleHeight = 0
@@ -250,6 +337,65 @@ private class WindowSurfaceView(
             field = value
             layoutWindow()
         }
+
+    fun updateHover(x: Float, y: Float) {
+        cursorX = x
+        cursorY = y
+    }
+
+    fun onCaptureChanged(hasCapture: Boolean) {
+        if (hasCapture) {
+            pointerIcon = PointerIcon.getSystemIcon(context, PointerIcon.TYPE_NULL)
+        } else {
+            pointerIcon = PointerIcon.getSystemIcon(context, PointerIcon.TYPE_DEFAULT)
+            capturedButtons = 0
+        }
+    }
+
+    override fun onCapturedPointerEvent(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_MOVE -> {
+                val dx = event.getAxisValue(MotionEvent.AXIS_RELATIVE_X)
+                val dy = event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y)
+                val maxH = if (visibleHeight in 1..surfaceHeight) visibleHeight else surfaceHeight
+                cursorX = (cursorX + dx).coerceIn(0f, surfaceWidth.toFloat())
+                cursorY = (cursorY + dy).coerceIn(0f, maxH.toFloat())
+                val hit = renderer.hitTest(cursorX, cursorY)
+                runtime.wm.pointerMove(hit)
+            }
+            MotionEvent.ACTION_SCROLL -> {
+                val vScroll = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
+                val hScroll = event.getAxisValue(MotionEvent.AXIS_HSCROLL)
+                if (vScroll != 0f || hScroll != 0f) {
+                    val dy = -vScroll * 15f
+                    val dx = -hScroll * 15f
+                    val steps = (-vScroll).roundToInt()
+                    runtime.wm.scroll(dx, dy, AXIS_SOURCE_WHEEL, steps)
+                }
+            }
+        }
+
+        val currentButtons = event.buttonState
+        val pressed = currentButtons and capturedButtons.inv()
+        val released = capturedButtons and currentButtons.inv()
+
+        if (pressed != 0) {
+            val hit = renderer.hitTest(cursorX, cursorY)
+            if (hit != null) {
+                runtime.wm.onPress(window, hit)
+            }
+            if (pressed and MotionEvent.BUTTON_PRIMARY != 0) runtime.wm.pointerButton(BTN_LEFT, true)
+            if (pressed and MotionEvent.BUTTON_SECONDARY != 0) runtime.wm.pointerButton(BTN_RIGHT, true)
+            if (pressed and MotionEvent.BUTTON_TERTIARY != 0) runtime.wm.pointerButton(BTN_MIDDLE, true)
+        }
+        if (released != 0) {
+            if (released and MotionEvent.BUTTON_PRIMARY != 0) runtime.wm.pointerButton(BTN_LEFT, false)
+            if (released and MotionEvent.BUTTON_SECONDARY != 0) runtime.wm.pointerButton(BTN_RIGHT, false)
+            if (released and MotionEvent.BUTTON_TERTIARY != 0) runtime.wm.pointerButton(BTN_MIDDLE, false)
+        }
+        capturedButtons = currentButtons
+        return true
+    }
 
     private fun layoutWindow() {
         if (surfaceWidth == 0) return
@@ -260,6 +406,8 @@ private class WindowSurfaceView(
 
     init {
         holder.addCallback(this)
+        holder.setFormat(android.graphics.PixelFormat.RGBX_8888)
+        pointerIcon = PointerIcon.getSystemIcon(context, PointerIcon.TYPE_NULL)
     }
 
     override fun onAttachedToWindow() {
@@ -283,6 +431,10 @@ private class WindowSurfaceView(
     ) {
         surfaceWidth = width
         surfaceHeight = height
+        if (cursorX == 0f && cursorY == 0f) {
+            cursorX = width / 2f
+            cursorY = height / 2f
+        }
         renderer.attach(holder.surface, width, height)
         layoutWindow()
     }
