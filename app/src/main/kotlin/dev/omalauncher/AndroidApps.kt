@@ -543,6 +543,7 @@ class AndroidAppCatalog(
                     apps.clear()
                     apps += list
                 }
+                dev.omalauncher.bridge.AppWatcher.export(context, list)
                 made = made.sortedWith(compareBy(shortcutOrder) { it.second })
                 val pinned = made.map { it.second }
                 if (pinned != shortcuts.toList()) {
