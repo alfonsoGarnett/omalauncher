@@ -71,8 +71,23 @@ class OpenBridge(
             Managed.text(File(bin, "xdg-open"), Policy.Owned, executable = true) {
                 """
                 #!/bin/sh
-                # omalauncher: opens URLs in the Android browser (see OpenBridge.kt)
-                timeout 2 sh -c 'printf "%s\n" "${'$'}1" > $guestFifo' sh "${'$'}1"
+                # omalauncher: opens URLs in the Android browser, and local files in Linux viewers
+                case "${'$'}1" in
+                    http://*|https://*|mailto:*|ftp://*)
+                        timeout 2 sh -c 'printf "%s\n" "${'$'}1" > $guestFifo' sh "${'$'}1"
+                        exit 0 ;;
+                esac
+                file="${'$'}{1#file://}"
+                [ -e "${'$'}file" ] || file="${'$'}PWD/${'$'}file"
+                mime="${'$'}(file -bL --mime-type "${'$'}file" 2>/dev/null)"
+                case "${'$'}mime" in
+                    image/*) exec imv "${'$'}file" ;;
+                    application/pdf) exec zathura "${'$'}file" ;;
+                    video/*|audio/*) exec mpv --force-window "${'$'}file" ;;
+                    inode/directory) exec thunar "${'$'}file" ;;
+                    text/*) exec foot -e nvim "${'$'}file" ;;
+                    *) timeout 2 sh -c 'printf "%s\n" "${'$'}1" > $guestFifo' sh "${'$'}1" ;;
+                esac
                 """.trimIndent() + "\n"
             },
             Managed.text(File(bin, FILES_COMMAND), Policy.Owned, executable = true) {
