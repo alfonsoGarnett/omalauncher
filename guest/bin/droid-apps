@@ -1,0 +1,17 @@
+#!/bin/bash
+# droid-apps: rebuild ~/.cache/droid/apps.json ([{name, pkg, icon, main, detail, tint, second}])
+# and the neon pixel icons in ~/.cache/droid/icons from the phone's installed apps.
+#   droid-apps              new and updated apps only
+#   droid-apps --force      redraw every app (pulling layers over adb where the launcher has none)
+#   droid-apps --rerender   redraw every icon from the layers at hand: never uses adb
+#   droid-apps <pkg>...     just those apps
+# Icon layers come from the launcher's export (android-apps.json); adb is only a fallback for
+# apps it has no icon for, and is skipped when it isn't reachable.
+# DROID_ART=16 draws chunkier 16x16 art instead of 20x20.
+DROID_DEV=none
+if [[ " $* " != *" --rerender "* ]]; then
+  DROID_DEV=$(timeout 20 droid 2>/dev/null | awk '{print $1}')
+  [ -n "$DROID_DEV" ] || DROID_DEV=none
+fi
+export DROID_DEV
+exec nice -n 10 ~/.local/share/droid/venv/bin/python -I ~/.local/share/droid/apps.py "$@"
