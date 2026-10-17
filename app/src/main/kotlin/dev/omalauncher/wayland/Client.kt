@@ -100,7 +100,7 @@ class Client(
 
     fun newServerId() = nextServerId++
 
-    inline fun <reified T : Resource> get(id: Int): T? = objects[id] as? T
+    inline fun <reified T> get(id: Int): T? = objects[id] as? T
 
     fun <T : Resource> register(resource: T): T {
         zombies.remove(resource.id)
@@ -278,7 +278,7 @@ class Client(
         const val MAX_FDS = 28
 
         /** Requests that carry an fd, by interface: the ones we implement. */
-        val FD_REQUESTS = mapOf("wl_shm" to setOf(0), "wl_data_offer" to setOf(1))
+        val FD_REQUESTS = mapOf("wl_shm" to setOf(0), "wl_data_offer" to setOf(1), "zwp_linux_buffer_params_v1" to setOf(1))
     }
 }
 

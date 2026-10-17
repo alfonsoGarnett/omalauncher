@@ -39,6 +39,9 @@ object Native {
     /** Copies [count] rects (x, y, w, h in buffer pixels) of a shm buffer into a store of its size. */
     @JvmStatic external fun storeCopy(shm: Long, offset: Int, stride: Int, format: Int, store: Long, rects: IntArray, count: Int): Int
 
+    /** Copies [count] rects of a dmabuf buffer into a store of its size, handling format conversions and y-invert. */
+    @JvmStatic external fun dmabufCopy(dmabuf: Long, fd: Int, offset: Int, stride: Int, format: Int, flags: Int, store: Long, rects: IntArray, count: Int): Int
+
     @JvmStatic external fun windowCreate(surface: Surface, width: Int, height: Int): Long
 
     @JvmStatic external fun windowRelease(window: Long)
