@@ -48,8 +48,6 @@ private suspend fun PointerInputScope.handlePointer(
         val event = awaitPointerEvent()
         val change = event.changes.firstOrNull() ?: continue
         if (change.type == PointerType.Mouse) {
-            mouseButtons = handleMouse(wm, window, event, mouseButtons)
-            change.consume()
             continue
         }
         if (event.type != PointerEventType.Press || change.isConsumed) continue

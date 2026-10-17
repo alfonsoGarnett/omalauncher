@@ -31,8 +31,21 @@ class WindowManager : WindowManagerHooks {
     /** Toplevels that have (or are getting) their own Android task. */
     val appWindows = mutableStateListOf<XdgToplevel>()
 
-    /** Each window's size in pixels, as its activity lays it out. */
-    private val sizes = HashMap<XdgToplevel, Pair<Int, Int>>()
+    data class WindowLayout(
+        val width: Int,
+        val height: Int,
+        val scale: Int,
+        val isExternal: Boolean = false,
+    )
+
+    /** Each window's layout and display scale, as its activity lays it out. */
+    private val layouts = HashMap<XdgToplevel, WindowLayout>()
+
+    fun hasExternalWindow(): Boolean = layouts.values.any { it.isExternal }
+
+    fun windowLayout(window: XdgToplevel): WindowLayout? = layouts[window]
+
+    fun windowScale(window: XdgToplevel): Int = layouts[window]?.scale ?: scale
 
     /** Starts the activity for an app window; set by the runtime. */
     var openAppWindow: (handle: String) -> Unit = {}
@@ -87,7 +100,7 @@ class WindowManager : WindowManagerHooks {
             if (embedded.remove(toplevel)) release(toplevel)
             appWindows -= toplevel
             handles.values.remove(toplevel)
-            sizes -= toplevel
+            layouts -= toplevel
             if (focused === toplevel) focus(null)
         }
     }
@@ -97,8 +110,10 @@ class WindowManager : WindowManagerHooks {
         window: XdgToplevel,
         width: Int,
         height: Int,
+        scale: Int = this.scale,
+        isExternal: Boolean = false,
     ) {
-        sizes[window] = width to height
+        layouts[window] = WindowLayout(width, height, scale, isExternal)
         synchronized(server) { configure(window) }
     }
 
@@ -136,11 +151,12 @@ class WindowManager : WindowManagerHooks {
     }
 
     private fun configure(window: XdgToplevel) {
-        val (w, h) = sizes[window] ?: return
-        window.configure(w / scale, h / scale, window === focused)
+        val layout = layouts[window] ?: return
+        val s = layout.scale.coerceAtLeast(1)
+        window.configure(layout.width / s, layout.height / s, window === focused)
     }
 
-    fun pointerMove(hit: SurfaceHit?) = server.postInput { pointerMotion(hit?.surface, hit?.x ?: 0f, hit?.y ?: 0f) }
+    fun pointerMove(hit: SurfaceHit?) = server.postPointerMove(hit?.surface, hit?.x ?: 0f, hit?.y ?: 0f)
 
     fun pointerButton(
         button: Int,

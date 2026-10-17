@@ -305,7 +305,7 @@ class Runtime(
         withContext(Dispatchers.IO) {
             provisioner.sync()
             audio.start()
-            synchronized(server) { server.input.setKeymap(proot.keymap.path) }
+            reloadKeymap(force = true)
             agents.load()
         }
         widgets.linuxChanged(true)
@@ -320,6 +320,22 @@ class Runtime(
         scope.launch { gpu.recheck() }
         // Export android apps now that Linux /run/user/0 is up
         scope.launch { dev.omalauncher.bridge.AppWatcher.export(context, androidApps.apps.toList()) }
+    }
+
+    private var lastKeymapLoaded: String? = null
+    private var lastKeymapTime: Long = 0L
+
+    /** Loads keymap from ~/.config/omalauncher/keymap.xkb if provided, else falls back to default proot keymap. */
+    fun reloadKeymap(force: Boolean = false) {
+        if (!linux) return
+        val userKeymap = java.io.File(proot.launcherConfig, "keymap.xkb")
+        val keymapFile = if (userKeymap.exists()) userKeymap else proot.keymap
+        val path = keymapFile.path
+        val mtime = keymapFile.lastModified()
+        if (!force && path == lastKeymapLoaded && mtime == lastKeymapTime) return
+        lastKeymapLoaded = path
+        lastKeymapTime = mtime
+        synchronized(server) { server.input.setKeymap(path) }
     }
 
     /** Turns GPU acceleration on (installing and checking the driver) or off, for Linux apps started from then on. */
@@ -347,6 +363,7 @@ class Runtime(
      * the terminal font.
      */
     private fun updateOutput() {
+        if (wm.hasExternalWindow()) return
         val metrics = context.resources.displayMetrics
         val mmPerPx = 25.4f / metrics.xdpi
         val scale = outputScale()
