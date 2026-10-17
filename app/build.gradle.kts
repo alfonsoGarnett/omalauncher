@@ -18,7 +18,7 @@ android {
     ndkVersion = prootNdk
 
     defaultConfig {
-        applicationId = "dev.omalauncher"
+        applicationId = "dev.omalauncher.mod"
         minSdk = 29
         targetSdk = 37
         versionCode = 25
@@ -44,6 +44,12 @@ android {
     testOptions { unitTests.isReturnDefaultValues = true }
 
     signingConfigs {
+        getByName("debug") {
+            storeFile = rootProject.file("mod-debug.keystore")
+            storePassword = "android"
+            keyAlias = "mod-debug"
+            keyPassword = "android"
+        }
         create("release") {
             uploadKey?.let {
                 storeFile = rootProject.file(it.getProperty("storeFile"))
