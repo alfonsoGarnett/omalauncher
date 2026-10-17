@@ -303,7 +303,7 @@ class Runtime(
         withContext(Dispatchers.IO) {
             provisioner.sync()
             audio.start()
-            synchronized(server) { server.input.setKeymap(proot.keymap.path) }
+            reloadKeymap(force = true)
             agents.load()
         }
         widgets.linuxChanged(true)
@@ -316,6 +316,22 @@ class Runtime(
         }
         // Apps render in software until the GPU passed its check on this system build.
         scope.launch { gpu.recheck() }
+    }
+
+    private var lastKeymapLoaded: String? = null
+    private var lastKeymapTime: Long = 0L
+
+    /** Loads keymap from ~/.config/omalauncher/keymap.xkb if provided, else falls back to default proot keymap. */
+    fun reloadKeymap(force: Boolean = false) {
+        if (!linux) return
+        val userKeymap = java.io.File(proot.launcherConfig, "keymap.xkb")
+        val keymapFile = if (userKeymap.exists()) userKeymap else proot.keymap
+        val path = keymapFile.path
+        val mtime = keymapFile.lastModified()
+        if (!force && path == lastKeymapLoaded && mtime == lastKeymapTime) return
+        lastKeymapLoaded = path
+        lastKeymapTime = mtime
+        synchronized(server) { server.input.setKeymap(path) }
     }
 
     /** Turns GPU acceleration on (installing and checking the driver) or off, for Linux apps started from then on. */

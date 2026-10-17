@@ -156,7 +156,7 @@ class WindowManager : WindowManagerHooks {
         window.configure(layout.width / s, layout.height / s, window === focused)
     }
 
-    fun pointerMove(hit: SurfaceHit?) = server.postInput { pointerMotion(hit?.surface, hit?.x ?: 0f, hit?.y ?: 0f) }
+    fun pointerMove(hit: SurfaceHit?) = server.postPointerMove(hit?.surface, hit?.x ?: 0f, hit?.y ?: 0f)
 
     fun pointerButton(
         button: Int,

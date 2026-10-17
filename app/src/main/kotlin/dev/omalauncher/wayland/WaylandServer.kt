@@ -6,6 +6,7 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.Choreographer
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
@@ -64,6 +65,36 @@ class WaylandServer(
 
     /** Input from the UI thread is applied here, in order, so the UI never waits on the server lock. */
     private val inputThread = Executors.newSingleThreadExecutor { Thread(it, "wl-input") }
+
+    private val moveLock = Any()
+    private var pendingMoveSurface: Surface? = null
+    private var pendingMoveX = 0f
+    private var pendingMoveY = 0f
+    private val hasPendingMove = AtomicBoolean(false)
+
+    fun postPointerMove(surface: Surface?, x: Float, y: Float) {
+        synchronized(moveLock) {
+            pendingMoveSurface = surface
+            pendingMoveX = x
+            pendingMoveY = y
+        }
+        if (hasPendingMove.compareAndSet(false, true)) {
+            inputThread.execute {
+                val s: Surface?
+                val px: Float
+                val py: Float
+                synchronized(moveLock) {
+                    s = pendingMoveSurface
+                    px = pendingMoveX
+                    py = pendingMoveY
+                    hasPendingMove.set(false)
+                }
+                synchronized(this) {
+                    input.pointerMotion(s, px, py)
+                }
+            }
+        }
+    }
 
     fun postInput(block: Input.() -> Unit) = inputThread.execute { synchronized(this) { input.block() } }
 

@@ -14,6 +14,7 @@ object Keys {
     const val KEY_SLASH = 53
     const val KEY_LEFTCTRL = 29
     const val KEY_LEFTALT = 56
+    const val KEY_RIGHTALT = 100
     const val KEY_HOME = 102
     const val KEY_UP = 103
     const val KEY_PAGEUP = 104

@@ -8,18 +8,24 @@ import android.graphics.Paint
 import android.graphics.Typeface
 import android.os.Build
 import android.os.Bundle
+import android.view.Choreographer
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.PointerIcon
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.view.View
+import android.widget.FrameLayout
 import dev.omalauncher.wayland.AXIS_SOURCE_WHEEL
 import dev.omalauncher.wayland.BTN_LEFT
 import dev.omalauncher.wayland.BTN_RIGHT
 import dev.omalauncher.wayland.BTN_MIDDLE
 import kotlin.math.roundToInt
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -29,10 +35,6 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.boundsInWindow
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imeAnimationTarget
@@ -51,13 +53,19 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import dev.omalauncher.ui.ExtraKeys
+import dev.omalauncher.ui.Icons
 import dev.omalauncher.ui.KeyboardSink
 import dev.omalauncher.ui.Mono
 import dev.omalauncher.ui.Palette
@@ -65,7 +73,15 @@ import dev.omalauncher.ui.linuxWindowInput
 import dev.omalauncher.ui.applySystemBars
 import dev.omalauncher.wayland.WindowRenderer
 import dev.omalauncher.wayland.XdgToplevel
+import dev.omalauncher.widgets.runtime.watchFile
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
 /**
  * Shows a single Linux window as its own Android task, so it gets its own
@@ -82,29 +98,40 @@ class LinuxWindowActivity : InstantActivity() {
         if (sv.hasPointerCapture()) {
             sv.releasePointerCapture()
         } else {
+            sv.isFocusable = true
+            sv.isFocusableInTouchMode = true
+            sv.requestFocus()
             sv.requestPointerCapture()
         }
     }
 
-    fun showDeXTaskbar() {
-        val sv = surfaceView
-        if (sv?.hasPointerCapture() == true) {
-            sv.releasePointerCapture()
-        }
-        if (Build.VERSION.SDK_INT >= 30) {
-            getWindow().insetsController?.show(
-                android.view.WindowInsets.Type.navigationBars() or android.view.WindowInsets.Type.statusBars()
-            )
+    private fun isDeXOrExternalDisplay(): Boolean {
+        val displayId = if (Build.VERSION.SDK_INT >= 30) {
+            display?.displayId ?: 0
         } else {
             @Suppress("DEPRECATION")
-            getWindow().decorView.systemUiVisibility = android.view.View.SYSTEM_UI_FLAG_VISIBLE
+            getSystemService(android.view.WindowManager::class.java)?.defaultDisplay?.displayId ?: 0
         }
+        if (displayId != 0) return true
+
+        val config = resources.configuration
+        try {
+            val field = config.javaClass.getField("semDesktopModeEnabled")
+            if (field.getInt(config) == 1) return true
+        } catch (_: Throwable) {}
+
+        return config.toString().contains("semDesktopModeEnabled=1")
     }
 
     override fun onPointerCaptureChanged(hasCapture: Boolean) {
         super.onPointerCaptureChanged(hasCapture)
         isPointerCaptured.value = hasCapture
         surfaceView?.onCaptureChanged(hasCapture)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            val icon = PointerIcon.getSystemIcon(this, PointerIcon.TYPE_NULL)
+            surfaceView?.pointerIcon = icon
+            getWindow().decorView.pointerIcon = icon
+        }
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -129,6 +156,10 @@ class LinuxWindowActivity : InstantActivity() {
         }
         this.window = window
         applySystemBars(this, Palette.isLight)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            val nullIcon = PointerIcon.getSystemIcon(this, PointerIcon.TYPE_NULL)
+            getWindow().decorView.pointerIcon = nullIcon
+        }
         getWindow().decorView.setOnHoverListener { _, event ->
             if (event.isFromSource(InputDevice.SOURCE_CLASS_POINTER)) {
                 surfaceView?.handleHover(event) ?: false
@@ -142,12 +173,9 @@ class LinuxWindowActivity : InstantActivity() {
                 runtime = runtime,
                 window = window,
                 isPointerCaptured = isPointerCaptured.value,
-                onTogglePointerCapture = { togglePointerCapture() },
-                onShowDeXTaskbar = { showDeXTaskbar() },
+                isExternal = isDeXOrExternalDisplay(),
             ) { sv ->
                 surfaceView = sv
-                sv.onRequestToggleCapture = { togglePointerCapture() }
-                sv.onRequestShowDeXTaskbar = { showDeXTaskbar() }
             }
             BackHandler { backInstantly() }
             LaunchedEffect(window) {
@@ -168,6 +196,8 @@ class LinuxWindowActivity : InstantActivity() {
 
     override fun onResume() {
         super.onResume()
+        runtime.reloadKeymap()
+        surfaceView?.reloadMouseConfig()
         window?.let(runtime.wm::focus)
     }
 
@@ -194,9 +224,7 @@ class LinuxWindowActivity : InstantActivity() {
         if (event.action == KeyEvent.ACTION_DOWN) {
             val isCtrl = event.isCtrlPressed
             val isAlt = event.isAltPressed
-            val isMeta = event.isMetaPressed
-            if ((isCtrl && isAlt && (event.keyCode == KeyEvent.KEYCODE_M || event.keyCode == KeyEvent.KEYCODE_P)) ||
-                (isMeta && event.keyCode == KeyEvent.KEYCODE_ESCAPE)) {
+            if (isCtrl && isAlt && event.keyCode == KeyEvent.KEYCODE_M) {
                 togglePointerCapture()
                 return true
             }
@@ -225,9 +253,9 @@ class LinuxWindowActivity : InstantActivity() {
             if (sv != null) {
                 if (event.actionMasked == MotionEvent.ACTION_SCROLL) {
                     if (sv.handleScroll(event)) return true
-                } else if (event.actionMasked == MotionEvent.ACTION_HOVER_MOVE ||
+                } else if (!sv.hasPointerCapture() && (event.actionMasked == MotionEvent.ACTION_HOVER_MOVE ||
                     event.actionMasked == MotionEvent.ACTION_HOVER_ENTER ||
-                    event.actionMasked == MotionEvent.ACTION_HOVER_EXIT) {
+                    event.actionMasked == MotionEvent.ACTION_HOVER_EXIT)) {
                     if (sv.handleHover(event)) return true
                 }
             }
@@ -274,8 +302,7 @@ private fun AppWindow(
     runtime: Runtime,
     window: XdgToplevel,
     isPointerCaptured: Boolean,
-    onTogglePointerCapture: () -> Unit,
-    onShowDeXTaskbar: () -> Unit,
+    isExternal: Boolean,
     onSurfaceViewCreated: (WindowSurfaceView) -> Unit = {},
 ) {
     var sink by remember { mutableStateOf<KeyboardSink?>(null) }
@@ -286,6 +313,25 @@ private fun AppWindow(
     // Where the keyboard ends up, not each frame of its slide, and read here so the extra keys come and go in the same
     // frame: the window then resizes once, and a terminal reflows once.
     val keyboard = (WindowInsets.imeAnimationTarget.getBottom(density) - WindowInsets.navigationBars.getBottom(density)).coerceAtLeast(0)
+
+    var showCaptureOsd by remember { mutableStateOf(false) }
+    var lastCapturedState by remember { mutableStateOf<Boolean?>(null) }
+
+    LaunchedEffect(isPointerCaptured) {
+        if (lastCapturedState != null && lastCapturedState != isPointerCaptured) {
+            showCaptureOsd = true
+            delay(1200)
+            showCaptureOsd = false
+        }
+        lastCapturedState = isPointerCaptured
+    }
+
+    val osdAlpha by animateFloatAsState(
+        targetValue = if (showCaptureOsd) 1f else 0f,
+        animationSpec = tween(200),
+        label = "osd_alpha",
+    )
+
     Box(
         Modifier
             .fillMaxSize()
@@ -321,66 +367,46 @@ private fun AppWindow(
                 // Over the SurfaceView, which Compose's pointer input doesn't reach.
                 Box(Modifier.fillMaxSize().linuxWindowInput(runtime.wm, window))
 
-                // Floating Toolbar
-                Row(
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(12.dp)
-                        .background(Palette.overlay, CircleShape)
-                        .padding(horizontal = 6.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    // 1. DeX Taskbar on demand button
+                // Transient OSD indicator when toggling pointer capture with Ctrl+Alt+M
+                if (osdAlpha > 0.01f) {
                     Box(
-                        Modifier
-                            .size(32.dp)
-                            .background(Color.Transparent, CircleShape)
-                            .clickable { onShowDeXTaskbar() }
-                            .onGloballyPositioned { coordinates ->
-                                val bounds = coordinates.boundsInWindow()
-                                surfaceView?.dexTaskbarButtonRect = android.graphics.Rect(
-                                    bounds.left.toInt(), bounds.top.toInt(),
-                                    bounds.right.toInt(), bounds.bottom.toInt(),
-                                )
-                            },
-                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(bottom = if (!isExternal) 56.dp else 20.dp, end = 20.dp)
+                            .alpha(osdAlpha)
+                            .background(Palette.overlay, CircleShape)
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
                     ) {
-                        BasicText("⊞", style = Mono.copy(color = Palette.foreground, fontSize = 16.sp))
-                    }
-
-                    // 2. Pointer Capture Toggle button
-                    Box(
-                        Modifier
-                            .size(32.dp)
-                            .background(
-                                if (isPointerCaptured) Palette.accent else Color.Transparent,
-                                CircleShape,
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Image(
+                                imageVector = if (isPointerCaptured) Icons.PointerCaptured else Icons.PointerFree,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                                colorFilter = ColorFilter.tint(if (isPointerCaptured) Palette.accent else Palette.foreground),
                             )
-                            .clickable { onTogglePointerCapture() }
-                            .onGloballyPositioned { coordinates ->
-                                val bounds = coordinates.boundsInWindow()
-                                surfaceView?.captureButtonRect = android.graphics.Rect(
-                                    bounds.left.toInt(), bounds.top.toInt(),
-                                    bounds.right.toInt(), bounds.bottom.toInt(),
-                                )
-                            },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        BasicText(
-                            if (isPointerCaptured) "🎯" else "🖱",
-                            style = Mono.copy(
-                                color = if (isPointerCaptured) Palette.background else Palette.foreground,
-                                fontSize = 14.sp,
-                            ),
-                        )
+                            BasicText(
+                                text = if (isPointerCaptured) "Capture On" else "Capture Off",
+                                style = Mono.copy(
+                                    color = if (isPointerCaptured) Palette.accent else Palette.foreground,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                ),
+                            )
+                        }
                     }
+                }
 
-                    // 3. Virtual Keyboard toggle button
+                // Virtual Keyboard toggle button: only shown on phone touchscreen, hidden on DeX / external displays
+                if (!isExternal) {
                     Box(
                         Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(12.dp)
                             .size(32.dp)
-                            .background(Color.Transparent, CircleShape)
+                            .background(Palette.overlay, CircleShape)
                             .clickable { sink?.toggle() },
                         contentAlignment = Alignment.Center,
                     ) {
@@ -414,12 +440,71 @@ private class WindowSurfaceView(
     private var surfaceHeight = 0
     private var cursorX = 0f
     private var cursorY = 0f
+    private var cursorInitialized = false
     private var capturedButtons = 0
+    private var pendingCapturedMove = false
+    private val moveCallback = Choreographer.FrameCallback {
+        if (!pendingCapturedMove) return@FrameCallback
+        pendingCapturedMove = false
+        val hit = renderer.hitTest(cursorX, cursorY)
+        if (hit != null) {
+            runtime.wm.pointerMove(hit)
+        }
+    }
 
-    var captureButtonRect: android.graphics.Rect? = null
-    var dexTaskbarButtonRect: android.graphics.Rect? = null
-    var onRequestToggleCapture: (() -> Unit)? = null
-    var onRequestShowDeXTaskbar: (() -> Unit)? = null
+    private fun flushCapturedMove() {
+        if (!pendingCapturedMove) return
+        pendingCapturedMove = false
+        try {
+            Choreographer.getInstance().removeFrameCallback(moveCallback)
+        } catch (_: Throwable) {}
+        val hit = renderer.hitTest(cursorX, cursorY)
+        if (hit != null) {
+            runtime.wm.pointerMove(hit)
+        }
+    }
+
+    @Volatile private var pointerSpeedMultiplier = 1.0f
+    @Volatile private var scrollSpeedMultiplier = 1.0f
+    @Volatile private var naturalScroll = false
+    private var scrollAccumulatorY = 0f
+    private var mouseConfigJob: Job? = null
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    fun reloadMouseConfig() = startWatchingMouseConfig()
+
+    fun startWatchingMouseConfig() {
+        val conf = java.io.File(runtime.proot.launcherConfig, "mouse.conf")
+        mouseConfigJob?.cancel()
+        mouseConfigJob = scope.launch {
+            watchFile(conf).collect { text ->
+                var ptr = 1.0f
+                var scrl = 1.0f
+                var nat = false
+                text.lines().forEach { line ->
+                    val trimmed = line.trim()
+                    if (!trimmed.startsWith("#") && trimmed.contains("=")) {
+                        val parts = trimmed.split("=", limit = 2)
+                        val k = parts[0].trim().lowercase()
+                        val v = parts[1].trim()
+                        when (k) {
+                            "pointer_speed", "speed" -> ptr = (v.toFloatOrNull() ?: 1.0f).coerceIn(0.1f, 10.0f)
+                            "scroll_speed", "scroll" -> scrl = (v.toFloatOrNull() ?: 1.0f).coerceIn(0.1f, 10.0f)
+                            "natural_scroll" -> nat = (v == "1" || v.lowercase() == "true")
+                        }
+                    }
+                }
+                pointerSpeedMultiplier = ptr
+                scrollSpeedMultiplier = scrl
+                naturalScroll = nat
+            }
+        }
+    }
+
+    private fun stopWatchingMouseConfig() {
+        mouseConfigJob?.cancel()
+        mouseConfigJob = null
+    }
 
     /** How much of the view, from its top, the keyboard and the extra keys leave the window; 0 for all of it. */
     var visibleHeight = 0
@@ -431,53 +516,78 @@ private class WindowSurfaceView(
 
     fun onCaptureChanged(hasCapture: Boolean) {
         if (!hasCapture) {
+            if (pendingCapturedMove) {
+                pendingCapturedMove = false
+                try { Choreographer.getInstance().removeFrameCallback(moveCallback) } catch (_: Throwable) {}
+            }
             capturedButtons = 0
             updateButtons(0)
+        } else {
+            if (!cursorInitialized) {
+                val maxW = if (surfaceWidth > 0) surfaceWidth else width.coerceAtLeast(1)
+                val maxH = (if (visibleHeight in 1..surfaceHeight) visibleHeight else if (surfaceHeight > 0) surfaceHeight else height).coerceAtLeast(1)
+                cursorX = maxW / 2f
+                cursorY = maxH / 2f
+                cursorInitialized = true
+            }
         }
+        pointerIcon = PointerIcon.getSystemIcon(context, PointerIcon.TYPE_NULL)
+    }
+
+    override fun onResolvePointerIcon(event: MotionEvent, pointerIndex: Int): PointerIcon {
+        return PointerIcon.getSystemIcon(context, PointerIcon.TYPE_NULL)
     }
 
     override fun onCapturedPointerEvent(event: MotionEvent): Boolean {
+        val maxW = if (surfaceWidth > 0) surfaceWidth else width.coerceAtLeast(1)
+        val maxH = (if (visibleHeight in 1..surfaceHeight) visibleHeight else if (surfaceHeight > 0) surfaceHeight else height).coerceAtLeast(1)
+        if (!cursorInitialized) {
+            cursorX = maxW / 2f
+            cursorY = maxH / 2f
+            cursorInitialized = true
+        }
+
         when (event.actionMasked) {
             MotionEvent.ACTION_MOVE -> {
-                val dx = event.getAxisValue(MotionEvent.AXIS_RELATIVE_X)
-                val dy = event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y)
-                val maxH = if (visibleHeight in 1..surfaceHeight) visibleHeight else surfaceHeight
-                cursorX = (cursorX + dx).coerceIn(0f, surfaceWidth.toFloat())
+                val historySize = event.historySize
+                for (i in 0 until historySize) {
+                    val hdx = event.getHistoricalAxisValue(MotionEvent.AXIS_RELATIVE_X, 0, i) * pointerSpeedMultiplier
+                    val hdy = event.getHistoricalAxisValue(MotionEvent.AXIS_RELATIVE_Y, 0, i) * pointerSpeedMultiplier
+                    cursorX = (cursorX + hdx).coerceIn(0f, maxW.toFloat())
+                    cursorY = (cursorY + hdy).coerceIn(0f, maxH.toFloat())
+                }
+                val dx = event.getAxisValue(MotionEvent.AXIS_RELATIVE_X) * pointerSpeedMultiplier
+                val dy = event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y) * pointerSpeedMultiplier
+                cursorX = (cursorX + dx).coerceIn(0f, maxW.toFloat())
                 cursorY = (cursorY + dy).coerceIn(0f, maxH.toFloat())
-                val hit = renderer.hitTest(cursorX, cursorY)
-                if (hit != null) {
-                    runtime.wm.pointerMove(hit)
+
+                val hasMoved = dx != 0f || dy != 0f || historySize > 0
+                if (hasMoved && !pendingCapturedMove) {
+                    pendingCapturedMove = true
+                    Choreographer.getInstance().postFrameCallback(moveCallback)
                 }
             }
             MotionEvent.ACTION_SCROLL -> {
-                val vScroll = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
-                val hScroll = event.getAxisValue(MotionEvent.AXIS_HSCROLL)
-                if (vScroll != 0f || hScroll != 0f) {
-                    val dy = -vScroll * 15f
-                    val dx = -hScroll * 15f
-                    val steps = (-vScroll).roundToInt()
-                    runtime.wm.scroll(dx, dy, AXIS_SOURCE_WHEEL, steps)
-                }
+                flushCapturedMove()
+                handleScroll(event)
             }
         }
 
-        val currentButtons = event.buttonState
+        val currentButtons = if (event.actionMasked == MotionEvent.ACTION_DOWN && event.buttonState == 0) {
+            MotionEvent.BUTTON_PRIMARY
+        } else if (event.actionMasked == MotionEvent.ACTION_UP) {
+            0
+        } else {
+            event.buttonState
+        }
         val pressed = currentButtons and capturedButtons.inv()
         val released = capturedButtons and currentButtons.inv()
 
+        if (pressed != 0 || released != 0) {
+            flushCapturedMove()
+        }
+
         if (pressed != 0) {
-            if (pressed and MotionEvent.BUTTON_PRIMARY != 0) {
-                val xInt = cursorX.toInt()
-                val yInt = cursorY.toInt()
-                if (captureButtonRect?.contains(xInt, yInt) == true) {
-                    onRequestToggleCapture?.invoke()
-                    return true
-                }
-                if (dexTaskbarButtonRect?.contains(xInt, yInt) == true) {
-                    onRequestShowDeXTaskbar?.invoke()
-                    return true
-                }
-            }
             val hit = renderer.hitTest(cursorX, cursorY)
             if (hit != null) {
                 runtime.wm.onPress(window, hit)
@@ -499,6 +609,7 @@ private class WindowSurfaceView(
     fun handleHover(event: MotionEvent): Boolean {
         cursorX = event.x
         cursorY = event.y
+        cursorInitialized = true
         when (event.actionMasked) {
             MotionEvent.ACTION_HOVER_MOVE, MotionEvent.ACTION_HOVER_ENTER -> {
                 val hit = renderer.hitTest(event.x, event.y)
@@ -516,16 +627,29 @@ private class WindowSurfaceView(
     }
 
     fun handleScroll(event: MotionEvent): Boolean {
-        val hit = renderer.hitTest(event.x, event.y)
+        flushCapturedMove()
+        val (hx, hy) = if (hasPointerCapture()) Pair(cursorX, cursorY) else Pair(event.x, event.y)
+        val hit = renderer.hitTest(hx, hy)
         if (hit != null) {
             runtime.wm.pointerMove(hit)
         }
         val vScroll = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
         val hScroll = event.getAxisValue(MotionEvent.AXIS_HSCROLL)
         if (vScroll != 0f || hScroll != 0f) {
-            val dy = -vScroll * 15f
-            val dx = -hScroll * 15f
-            val steps = (-vScroll).roundToInt()
+            val dir = if (naturalScroll) -1f else 1f
+            val dy = -vScroll * 15f * scrollSpeedMultiplier * dir
+            val dx = -hScroll * 15f * scrollSpeedMultiplier * dir
+
+            val rawStepsY = -vScroll * dir * scrollSpeedMultiplier
+            if (rawStepsY * scrollAccumulatorY < 0f) {
+                scrollAccumulatorY = 0f
+            }
+            scrollAccumulatorY += rawStepsY
+            var steps = scrollAccumulatorY.toInt()
+            scrollAccumulatorY -= steps
+            if (steps == 0 && vScroll != 0f && scrollSpeedMultiplier >= 1.0f) {
+                steps = (-vScroll * dir).roundToInt()
+            }
             runtime.wm.scroll(dx, dy, AXIS_SOURCE_WHEEL, steps)
             return true
         }
@@ -542,7 +666,7 @@ private class WindowSurfaceView(
                     runtime.wm.onPress(window, hit)
                     runtime.wm.pointerMove(hit)
                 }
-                updateButtons(event.buttonState)
+                updateButtons(if (event.buttonState == 0) MotionEvent.BUTTON_PRIMARY else event.buttonState)
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
@@ -611,12 +735,21 @@ private class WindowSurfaceView(
     }
 
     private fun isExternalDisplay(): Boolean {
-        return if (Build.VERSION.SDK_INT >= 30) {
-            (display?.displayId ?: 0) != 0
+        val displayId = if (Build.VERSION.SDK_INT >= 30) {
+            display?.displayId ?: 0
         } else {
             @Suppress("DEPRECATION")
             (context.getSystemService(android.view.WindowManager::class.java)?.defaultDisplay?.displayId ?: 0) != 0
         }
+        if (displayId != 0) return true
+
+        val config = context.resources.configuration
+        try {
+            val field = config.javaClass.getField("semDesktopModeEnabled")
+            if (field.getInt(config) == 1) return true
+        } catch (_: Throwable) {}
+
+        return config.toString().contains("semDesktopModeEnabled=1")
     }
 
     fun layoutWindow() {
@@ -639,9 +772,16 @@ private class WindowSurfaceView(
         super.onAttachedToWindow()
         window.renderer = renderer
         pointerIcon = PointerIcon.getSystemIcon(context, PointerIcon.TYPE_NULL)
+        startWatchingMouseConfig()
     }
 
     override fun onDetachedFromWindow() {
+        if (pendingCapturedMove) {
+            pendingCapturedMove = false
+            try { Choreographer.getInstance().removeFrameCallback(moveCallback) } catch (_: Throwable) {}
+        }
+        stopWatchingMouseConfig()
+        scope.cancel()
         if (window.renderer === renderer) window.renderer = null
         renderer.release()
         super.onDetachedFromWindow()
