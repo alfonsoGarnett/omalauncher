@@ -37,6 +37,8 @@ android {
             // Extract .so files to nativeLibraryDir: proot is exec'd from there.
             useLegacyPackaging = true
             keepDebugSymbols += listOf("**/libproot.so", "**/libproot-loader.so")
+            // Fork: the NDK's llvm-strip is an x86-64 binary that can't run on the ARM64 host this builds on.
+            keepDebugSymbols += "**/*.so"
         }
     }
 
