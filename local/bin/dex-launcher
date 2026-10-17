@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# dex-launcher: Open Omalauncher on Samsung DeX external screen
+export ANDROID_SERIAL="${ANDROID_SERIAL:-127.0.0.1:5556}"
+
+# Find DeX display ID
+DEX_ID=$(droid dumpsys display 2>/dev/null | grep -o 'mDisplayId=[1-9][0-9]*' | head -1 | cut -d= -f2)
+DEX_ID="${DEX_ID:-63}"
+
+echo "[Omarchy] Abriendo Omalauncher en Samsung DeX (Display $DEX_ID)..."
+droid am start --display "$DEX_ID" -n dev.omalauncher/.MainActivity

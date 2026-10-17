@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+unset WAYLAND_SOCKET
+export GDK_BACKEND=wayland
+if [ -z "$WAYLAND_DISPLAY" ]; then
+    if [ -S /run/user/0/wayland-1 ]; then
+        export WAYLAND_DISPLAY=wayland-1
+    else
+        export WAYLAND_DISPLAY=wayland-0
+    fi
+fi
+
+if [ "$1" = "power" ]; then
+    swaymsg exit
+else
+    pkill -x wofi || wofi --show drun --prompt "Search apps..."
+fi

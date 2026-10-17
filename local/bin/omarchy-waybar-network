@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+import json
+import os
+import subprocess
+import time
+
+def fmt_bytes(b):
+    b = float(b)
+    for unit in ["B", "KB", "MB", "GB"]:
+        if b < 1024:
+            return f"{b:.1f} {unit}"
+        b /= 1024
+    return f"{b:.1f} TB"
+
+def fmt_speed(bps):
+    bps = float(bps)
+    if bps >= 1024 * 1024:
+        return f"{bps / (1024 * 1024):.1f}M/s"
+    elif bps >= 1024:
+        return f"{bps / 1024:.0f}K/s"
+    else:
+        return f"{bps:.0f}B/s"
+
+# Check active routes
+routes = ""
+try:
+    routes = subprocess.check_output(["ip", "route"], text=True, stderr=subprocess.DEVNULL)
+except Exception:
+    pass
+
+has_wifi = "wlan0" in routes
+has_mobile = "rmnet" in routes or "ccmni" in routes
+
+rx_total = 0
+tx_total = 0
+rx_speed = ""
+tx_speed = ""
+
+for path in ["/run/user/0/android-status.json", os.path.expanduser("~/.local/share/omarchy/android-status.json")]:
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            net = data.get("network", {})
+            rx_total = int(net.get("rx_bytes", 0))
+            tx_total = int(net.get("tx_bytes", 0))
+            rx_speed = net.get("rx_speed_human", "")
+            tx_speed = net.get("tx_speed_human", "")
+            break
+        except Exception:
+            pass
+
+# Fallback speed calculation via state file if human speed not yet available
+now = time.time()
+state_file = "/tmp/waybar_net_cache.json"
+last_rx = 0
+last_tx = 0
+last_t = 0
+
+if not rx_speed or not tx_speed:
+    if os.path.exists(state_file):
+        try:
+            with open(state_file, "r") as f:
+                st = json.load(f)
+                last_rx = st.get("rx", 0)
+                last_tx = st.get("tx", 0)
+                last_t = st.get("t", 0)
+        except Exception:
+            pass
+
+    dt = now - last_t
+    if last_t > 0 and dt > 0.5 and rx_total >= last_rx and tx_total >= last_tx:
+        rx_bps = (rx_total - last_rx) / dt
+        tx_bps = (tx_total - last_tx) / dt
+        rx_speed = fmt_speed(rx_bps)
+        tx_speed = fmt_speed(tx_bps)
+    else:
+        rx_speed = "0B/s"
+        tx_speed = "0B/s"
+
+    try:
+        with open(state_file, "w") as f:
+            json.dump({"rx": rx_total, "tx": tx_total, "t": now}, f)
+    except Exception:
+        pass
+
+if has_wifi:
+    icon = "󰤨"
+    mode = "Wi-Fi (wlan0)"
+elif has_mobile:
+    icon = "󰤥"
+    mode = "Mobile data"
+else:
+    icon = "󰤮"
+    mode = "Disconnected"
+
+text = f"{icon} ⇣{rx_speed} ⇡{tx_speed}"
+tooltip = f"Android network: {mode}\n⇣ Down: {rx_speed} (total: {fmt_bytes(rx_total)})\n⇡ Up: {tx_speed} (total: {fmt_bytes(tx_total)})\nClick: app launcher"
+
+print(json.dumps({
+    "text": text,
+    "tooltip": tooltip,
+    "class": "wifi" if has_wifi else ("mobile" if has_mobile else "disconnected")
+}))

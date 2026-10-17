@@ -1,0 +1,5 @@
+#!/bin/sh
+# phone-run: Force running an application on the Phone Screen (Omalauncher)
+export OMARCHY_TARGET=phone
+export WAYLAND_DISPLAY=wayland-0
+exec "$@"

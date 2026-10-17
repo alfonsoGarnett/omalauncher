@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# omarchy-webapp: open a web app without browser chrome, with Wayland acceleration
+# Usage: omarchy-webapp <url> [window-title/app-name]
+
+if [ -z "$1" ]; then
+  echo "Usage: omarchy-webapp <url> [app-name]"
+  exit 1
+fi
+
+URL="$1"
+NAME="${2:-WebApp}"
+
+# The environment Wayland acceleration needs under proot
+export MOZ_ENABLE_WAYLAND=1
+export GDK_BACKEND=wayland
+export QT_QPA_PLATFORM=wayland
+export MOZ_SHM_NO_SEALS=1
+export MOZ_DISABLE_CONTENT_SANDBOX=1
+export MOZ_DISABLE_RDD_SANDBOX=1
+export MOZ_DISABLE_UTILITY_SANDBOX=1
+export MOZ_DISABLE_GMP_SANDBOX=1
+export MOZ_DISABLE_SOCKET_PROCESS_SANDBOX=1
+
+unset MESA_LOADER_DRIVER_OVERRIDE
+
+# Context detection: Desktop Linux (Sway/DeX) vs Phone Screen (Omalauncher)
+RUN_DIR="${XDG_RUNTIME_DIR:-/run/user/0}"
+SWAY_SOCKET=$(ls -t "$RUN_DIR"/sway-ipc.*.sock 2>/dev/null | head -1)
+DEX_EXTERNAL=0
+if command -v droid >/dev/null 2>&1; then
+  DEX_EXTERNAL=$(droid settings get system dex_on_external_display 2>/dev/null || echo 0)
+fi
+
+if [ "$OMARCHY_TARGET" = "phone" ]; then
+  export WAYLAND_DISPLAY=wayland-0
+elif [ "$OMARCHY_TARGET" = "dex" ] || [ "$DEX_EXTERNAL" = "1" ] || [ -n "$SWAYSOCK" ]; then
+  if [ -S "$RUN_DIR/wayland-1" ]; then
+    export WAYLAND_DISPLAY=wayland-1
+    [ -n "$SWAY_SOCKET" ] && export SWAYSOCK="$SWAY_SOCKET"
+  else
+    export WAYLAND_DISPLAY=wayland-0
+  fi
+elif [ -S "$RUN_DIR/wayland-1" ] && [ -n "$SWAY_SOCKET" ]; then
+  export WAYLAND_DISPLAY=wayland-1
+  export SWAYSOCK="$SWAY_SOCKET"
+elif [ -z "$WAYLAND_DISPLAY" ]; then
+  export WAYLAND_DISPLAY=wayland-0
+fi
+
+if command -v dex-scale >/dev/null 2>&1; then
+  eval "$(dex-scale --env 2>/dev/null)"
+fi
+
+# Pick a browser (Chromium/Brave/Edge first for their native --app, else Firefox)
+if command -v chromium >/dev/null 2>&1; then
+  exec chromium --ozone-platform=wayland --enable-features=UseOzonePlatform --app="$URL" "$@"
+elif [ -x /usr/bin/google-chrome-stable ]; then
+  exec google-chrome-stable --ozone-platform=wayland --enable-features=UseOzonePlatform --app="$URL" "$@"
+elif command -v brave >/dev/null 2>&1; then
+  exec brave --ozone-platform=wayland --enable-features=UseOzonePlatform --app="$URL" "$@"
+elif [ -x /usr/local/bin/firefox ]; then
+  # Firefox in app/kiosk mode without extra toolbars
+  exec /usr/local/bin/firefox --new-window "$URL" "$@"
+elif command -v firefox >/dev/null 2>&1; then
+  exec firefox --new-window "$URL" "$@"
+else
+  # Fallback a xdg-open (Android bridge)
+  exec xdg-open "$URL"
+fi

@@ -1,0 +1,14 @@
+# Generated dynamically from Omarchy active theme
+set $theme_bg #1a1b1e
+set $theme_fg #eaeaef
+set $theme_accent #7ca5ff
+set $theme_muted #505258
+set $theme_red #ef5d67
+set $theme_green #8edb73
+set $theme_yellow #f7c553
+set $theme_blue #7ca5ff
+
+client.focused          $theme_accent $theme_accent $theme_bg $theme_accent $theme_accent
+client.focused_inactive $theme_muted  $theme_muted  $theme_fg $theme_muted  $theme_muted
+client.unfocused        $theme_bg     $theme_bg     $theme_fg $theme_bg     $theme_bg
+client.urgent           $theme_red    $theme_red    $theme_bg $theme_red    $theme_red

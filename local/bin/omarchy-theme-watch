@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# omarchy-theme-watch: Omalauncher writes the theme files itself instead of
+# running omarchy-theme-set, so running apps never get retinted. This watches
+# the active theme and runs Omarchy's own retint steps when it changes.
+#
+#   omarchy-theme-watch          run in the foreground
+#   omarchy-theme-watch --once   apply the current theme now and exit
+#   omarchy-theme-watch --daemon start in the background unless already running
+
+export OMARCHY_PATH="${OMARCHY_PATH:-$HOME/.local/share/omarchy}"
+export PATH="$HOME/.local/bin:$OMARCHY_PATH/bin:$PATH"
+
+STATE="$HOME/.local/state/omarchy/current"
+LOCK="${XDG_RUNTIME_DIR:-/tmp}/omarchy-theme-watch.lock"
+LOG="$HOME/.local/state/omarchy/theme-watch.log"
+
+stamp() { stat -c '%Y' "$STATE/theme/colors.toml" "$STATE/theme.name" 2>/dev/null | tr '\n' ' '; }
+
+apply() {
+  local name; name=$(<"$STATE/theme.name") 2>/dev/null
+  {
+    echo "[$(date '+%F %T')] theme -> ${name:-?}"
+    omarchy-theme-set-foot          # running foot/alacritty tiles: OSC palette
+    omarchy-theme-set-tmux          # tmux window style + pane palettes
+    omarchy-restart-btop            # btop re-reads current.theme on SIGUSR2
+    omarchy-sync-theme              # waybar colors.css + sway/i3 borders, reloads both
+    omarchy-hook theme-set "$name"  # ~/.config/omarchy/hooks/theme-set(.d)
+  } >>"$LOG" 2>&1
+}
+
+case "$1" in
+  --once) apply; exit 0 ;;
+  --daemon)
+    setsid "$0" </dev/null >/dev/null 2>&1 &
+    exit 0 ;;
+esac
+
+exec 9>"$LOCK"
+flock -n 9 || exit 0   # one watcher only
+echo $$ >"${XDG_RUNTIME_DIR:-/tmp}/omarchy-theme-watch.pid"
+
+last=$(stamp)
+while sleep 2; do
+  now=$(stamp)
+  if [[ -n $now && $now != "$last" ]]; then
+    sleep 0.5            # let the launcher finish writing every file
+    last=$(stamp)
+    apply
+  fi
+done

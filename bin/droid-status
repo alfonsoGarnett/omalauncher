@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+import json, subprocess, socket, sys
+
+def main():
+    res = {
+        "connected": False,
+        "host_state": "disconnected",
+        "target_port": 5556,
+        "model": "",
+        "product": "",
+        "devices": [],
+        "ports": {"5555": False, "5556": False}
+    }
+
+    # Check ports 5555 and 5556
+    for p in (5555, 5556):
+        try:
+            s = socket.socket()
+            s.settimeout(0.12)
+            if s.connect_ex(("127.0.0.1", p)) == 0:
+                res["ports"][str(p)] = True
+            s.close()
+        except Exception:
+            pass
+
+    # Read adb devices -l
+    try:
+        out = subprocess.check_output(["adb", "devices", "-l"], timeout=2.5, stderr=subprocess.DEVNULL).decode("utf-8", "replace")
+        for line in out.strip().splitlines()[1:]:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split()
+            serial = parts[0]
+            state = parts[1] if len(parts) > 1 else "unknown"
+            info = {}
+            for part in parts[2:]:
+                if ":" in part:
+                    k, v = part.split(":", 1)
+                    info[k] = v
+            is_host = ("5556" in serial) or ("5555" in serial) or (serial.startswith("127.0.0.1"))
+            dev_entry = {
+                "serial": serial,
+                "state": state,
+                "model": info.get("model", ""),
+                "product": info.get("product", ""),
+                "device": info.get("device", ""),
+                "transport_id": info.get("transport_id", ""),
+                "is_host": is_host
+            }
+            res["devices"].append(dev_entry)
+            if is_host:
+                res["host_state"] = state
+                if state == "device":
+                    res["connected"] = True
+                    if info.get("model"):
+                        res["model"] = info.get("model")
+                    if info.get("product"):
+                        res["product"] = info.get("product")
+    except Exception as e:
+        res["error"] = str(e)
+
+    # Fallback to get ro.product.model if model string empty
+    if res["connected"] and not res["model"]:
+        try:
+            m = subprocess.check_output(["adb", "-s", "127.0.0.1:5556", "shell", "getprop", "ro.product.model"], timeout=1.5).decode().strip()
+            if m:
+                res["model"] = m
+        except Exception:
+            pass
+
+    print(json.dumps(res))
+
+if __name__ == "__main__":
+    main()

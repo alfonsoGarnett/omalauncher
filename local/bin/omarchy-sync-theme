@@ -1,0 +1,193 @@
+#!/usr/bin/env python3
+import os
+import subprocess
+import tomllib
+
+theme_path = os.path.expanduser("~/.config/omarchy/current/theme/colors.toml")
+if not os.path.exists(theme_path):
+    theme_path = os.path.expanduser("~/.local/state/omarchy/current/theme/colors.toml")
+
+if not os.path.exists(theme_path):
+    print("Theme colors.toml not found, skipping sync.")
+    exit(0)
+
+with open(theme_path, "rb") as f:
+    c = tomllib.load(f)
+
+accent = c.get("accent", "#7aa2f7")
+bg = c.get("background", "#1a1b26")
+dark_bg = c.get("dark_background", "#13141c")
+fg = c.get("foreground", "#a9b1d6")
+muted = c.get("muted", "#414868")
+red = c.get("red", "#f7768e")
+green = c.get("green", "#9ece6a")
+yellow = c.get("yellow", "#e0af68")
+blue = c.get("blue", "#7aa2f7")
+magenta = c.get("magenta", "#ad8ee6")
+cyan = c.get("cyan", "#449dab")
+
+# 1. Waybar CSS
+waybar_dir = os.path.expanduser("~/.config/waybar")
+os.makedirs(waybar_dir, exist_ok=True)
+waybar_css_content = f"""/* Generated dynamically from Omarchy active theme */
+@define-color accent {accent};
+@define-color background {bg};
+@define-color dark_background {dark_bg};
+@define-color foreground {fg};
+@define-color muted {muted};
+@define-color red {red};
+@define-color green {green};
+@define-color yellow {yellow};
+@define-color blue {blue};
+@define-color magenta {magenta};
+@define-color cyan {cyan};
+@define-color color0 {dark_bg};
+@define-color color1 {red};
+@define-color color2 {green};
+@define-color color3 {yellow};
+@define-color color4 {blue};
+@define-color color5 {magenta};
+@define-color color6 {cyan};
+@define-color color7 {fg};
+@define-color color8 {muted};
+@define-color color9 {red};
+@define-color color10 {green};
+@define-color color11 {yellow};
+@define-color color12 {blue};
+@define-color color13 {magenta};
+@define-color color14 {cyan};
+@define-color color15 {fg};
+"""
+with open(os.path.join(waybar_dir, "colors.css"), "w") as f:
+    f.write(waybar_css_content)
+
+try:
+    with open(os.path.join(os.path.dirname(theme_path), "waybar.css"), "w") as f:
+        f.write(waybar_css_content)
+except Exception:
+    pass
+
+# 2. i3 & Sway Colors
+i3_colors_content = f"""# Generated dynamically from Omarchy active theme
+set $theme_bg {bg}
+set $theme_fg {fg}
+set $theme_accent {accent}
+set $theme_muted {muted}
+set $theme_red {red}
+set $theme_green {green}
+set $theme_yellow {yellow}
+set $theme_blue {blue}
+
+client.focused          $theme_accent $theme_accent $theme_bg $theme_accent $theme_accent
+client.focused_inactive $theme_muted  $theme_muted  $theme_fg $theme_muted  $theme_muted
+client.unfocused        $theme_bg     $theme_bg     $theme_fg $theme_bg     $theme_bg
+client.urgent           $theme_red    $theme_red    $theme_bg $theme_red    $theme_red
+"""
+
+for wm in ["i3", "sway"]:
+    wm_dir = os.path.expanduser(f"~/.config/{wm}")
+    os.makedirs(wm_dir, exist_ok=True)
+    with open(os.path.join(wm_dir, "colors"), "w") as f:
+        f.write(i3_colors_content)
+
+# 3. Wofi Style
+wofi_dir = os.path.expanduser("~/.config/wofi")
+os.makedirs(wofi_dir, exist_ok=True)
+with open(os.path.join(wofi_dir, "style.css"), "w") as f:
+    f.write(f"""/* Generated dynamically from Omarchy active theme */
+window {{
+    margin: 0px;
+    border: 2px solid {accent};
+    background-color: {bg};
+    border-radius: 8px;
+    font-family: 'JetBrains Mono', 'Symbols Nerd Font Mono', 'DejaVu Sans Mono', monospace;
+    font-size: 14px;
+}}
+#input {{
+    margin: 5px;
+    border: 1px solid {muted};
+    color: {fg};
+    background-color: {dark_bg};
+    border-radius: 4px;
+    padding: 6px;
+}}
+#inner-box {{
+    margin: 5px;
+    background-color: {bg};
+}}
+#outer-box {{
+    margin: 5px;
+    background-color: {bg};
+}}
+#entry:selected {{
+    background-color: {accent};
+    color: {dark_bg};
+    font-weight: bold;
+    border-radius: 4px;
+}}
+#text {{
+    margin: 3px;
+    color: {fg};
+}}
+#text:selected {{
+    color: {dark_bg};
+}}
+""")
+
+# 4. Lazygit Theme
+lazygit_dir = os.path.expanduser("~/.config/lazygit")
+os.makedirs(lazygit_dir, exist_ok=True)
+with open(os.path.join(lazygit_dir, "config.yml"), "w") as f:
+    f.write(f"""# Generated dynamically from Omarchy active theme
+gui:
+  theme:
+    activeBorderColor:
+      - '{accent}'
+      - bold
+    inactiveBorderColor:
+      - '{muted}'
+    searchingActiveBorderColor:
+      - '{yellow}'
+      - bold
+    optionsTextColor:
+      - '{blue}'
+    selectedLineBgColor:
+      - '{muted}'
+    cherryPickedCommitBgColor:
+      - '{cyan}'
+    cherryPickedCommitFgColor:
+      - '{accent}'
+    unstagedChangesColor:
+      - '{red}'
+    defaultFgColor:
+      - '{fg}'
+""")
+
+# 5. Yazi Theme
+yazi_dir = os.path.expanduser("~/.config/yazi")
+os.makedirs(yazi_dir, exist_ok=True)
+with open(os.path.join(yazi_dir, "theme.toml"), "w") as f:
+    f.write(f"""# Generated dynamically from Omarchy active theme
+[mgr]
+border_symbol = "│"
+border_style  = {{ fg = "{muted}" }}
+hovered       = {{ fg = "{dark_bg}", bg = "{accent}", bold = true }}
+preview_hovered = {{ underline = true }}
+
+[status]
+separator_open  = ""
+separator_close = ""
+separator_style = {{ fg = "{muted}", bg = "{bg}" }}
+mode_normal     = {{ fg = "{dark_bg}", bg = "{blue}", bold = true }}
+mode_select     = {{ fg = "{dark_bg}", bg = "{green}", bold = true }}
+mode_unset      = {{ fg = "{dark_bg}", bg = "{red}", bold = true }}
+""")
+
+# Live reload running components
+for cmd in [["pkill", "-SIGUSR2", "waybar"], ["swaymsg", "reload"], ["i3-msg", "reload"]]:
+    try:
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+print(f"Omarchy theme synced: {accent} on {bg}")

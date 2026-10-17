@@ -1,0 +1,239 @@
+#!/usr/bin/env python3
+"""
+dex-scale: Detect Samsung DeX resolution and calculate optimal scaling factors
+for Omarchy Desktop (Sway), Firefox, GTK, and Qt applications.
+"""
+
+import os
+import sys
+import subprocess
+import re
+import json
+
+USER_SCALE_FILE = os.path.expanduser('~/.config/omarchy/dex-scale')
+
+def get_display_telemetry():
+    is_sway = bool(os.environ.get('SWAYSOCK') or os.environ.get('WAYLAND_DISPLAY') == 'wayland-1')
+    target_override = os.environ.get('OMARCHY_TARGET', '').lower()
+    custom_scale = os.environ.get('DEX_SCALE') or os.environ.get('FIREFOX_SCALE') or os.environ.get('MOZ_PIXELS_PER_PX')
+    if not custom_scale:
+        # A scale the user pinned from the theme menu (omarchy-waybar-theme)
+        try:
+            with open(USER_SCALE_FILE, 'r', encoding='utf-8') as f:
+                custom_scale = f.read().strip() or None
+        except OSError:
+            pass
+
+    dex_setting = '0'
+    try:
+        dex_setting = subprocess.check_output(
+            ['droid', 'settings', 'get', 'system', 'dex_on_external_display'],
+            stderr=subprocess.DEVNULL, timeout=1.0
+        ).decode().strip()
+    except Exception:
+        pass
+
+    displays = {}
+    try:
+        out = subprocess.check_output(
+            ['droid', 'dumpsys', 'window', 'displays'],
+            stderr=subprocess.DEVNULL, timeout=1.5
+        ).decode('utf-8', errors='ignore')
+        for block in re.split(r'Display:\s+mDisplayId=', out)[1:]:
+            lines = block.strip().splitlines()
+            if not lines:
+                continue
+            m_id = re.match(r'(\d+)', lines[0])
+            if not m_id:
+                continue
+            disp_id = int(m_id.group(1))
+            init_m = re.search(r'init=(\d+)x(\d+)\s+(\d+)dpi', block)
+            if init_m:
+                displays[disp_id] = {
+                    'id': disp_id,
+                    'w': int(init_m.group(1)),
+                    'h': int(init_m.group(2)),
+                    'dpi': int(init_m.group(3))
+                }
+    except Exception:
+        pass
+
+    # External / DeX display is any displayId > 0
+    dex_disp = None
+    for disp_id, info in displays.items():
+        if disp_id != 0:
+            dex_disp = info
+            break
+
+    # Determine mode
+    is_dex = False
+    if target_override == 'dex':
+        is_dex = True
+    elif target_override == 'phone':
+        is_dex = False
+    elif dex_setting == '1' or dex_disp is not None:
+        is_dex = True
+
+    # Calculate optimal desktop & app scale
+    if custom_scale:
+        try:
+            scale = float(custom_scale)
+        except ValueError:
+            scale = 1.0
+    elif is_dex:
+        if dex_disp:
+            h = dex_disp['h']
+            dpi = dex_disp['dpi']
+            if h <= 1080:
+                scale = 1.0
+            elif h <= 1440:
+                scale = 1.25 if dpi > 200 else 1.0
+            elif h <= 1600:
+                scale = 1.25
+            elif h <= 2160:
+                scale = 2.0 if dpi >= 280 else 1.5
+            else:
+                scale = 2.0
+        else:
+            # Default standard DeX external monitor (1080p desktop)
+            scale = 1.0
+    else:
+        # Standalone phone screen: adapt dynamically to phone DPI
+        phone_info = displays.get(0, {'id': 0, 'w': 1440, 'h': 3120, 'dpi': 600})
+        phone_dpi = phone_info.get('dpi', 600)
+        phone_min = min(phone_info.get('w', 1440), phone_info.get('h', 3120))
+        if phone_dpi >= 480 or phone_min >= 1400:
+            scale = 3.0
+        elif phone_dpi >= 320 or phone_min >= 1000:
+            scale = 2.0
+        else:
+            scale = 1.0
+
+    active_disp = dex_disp if is_dex and dex_disp else displays.get(0, {'id': 0, 'w': 1440, 'h': 3120, 'dpi': 600})
+    dpi_val = int(scale * 96)
+
+    return {
+        'mode': 'dex' if is_dex else 'phone',
+        'is_dex': is_dex,
+        'scale': scale,
+        'scale_str': f'{scale:.2f}'.rstrip('0').rstrip('.') if scale != int(scale) else f'{int(scale)}.0',
+        'dpi': dpi_val,
+        'gdk_scale': int(scale) if scale >= 1.0 else 1,
+        'gdk_dpi_scale': round(scale / (int(scale) if scale >= 1.0 else 1), 2),
+        'display': active_disp,
+        'is_sway': is_sway
+    }
+
+def update_firefox_profile(scale_str):
+    updated = []
+    base_dir = os.path.expanduser('~/.config/mozilla/firefox')
+    if not os.path.isdir(base_dir):
+        return updated
+
+    for item in os.listdir(base_dir):
+        pdir = os.path.join(base_dir, item)
+        if os.path.isdir(pdir) and ('default' in item):
+            user_js = os.path.join(pdir, 'user.js')
+            line = f'user_pref("layout.css.devPixelsPerPx", "{scale_str}");\n'
+            if os.path.exists(user_js):
+                try:
+                    with open(user_js, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    if 'layout.css.devPixelsPerPx' in content:
+                        content = re.sub(
+                            r'user_pref\(\s*"layout\.css\.devPixelsPerPx"\s*,.*?\);',
+                            f'user_pref("layout.css.devPixelsPerPx", "{scale_str}");',
+                            content
+                        )
+                    else:
+                        content += '\n' + line
+                    with open(user_js, 'w', encoding='utf-8') as f:
+                        f.write(content)
+                    updated.append(user_js)
+                except Exception as e:
+                    print(f"Error updating {user_js}: {e}", file=sys.stderr)
+            else:
+                try:
+                    with open(user_js, 'w', encoding='utf-8') as f:
+                        f.write(line)
+                    updated.append(user_js)
+                except Exception as e:
+                    print(f"Error writing {user_js}: {e}", file=sys.stderr)
+    return updated
+
+def update_sway_outputs_file(scale_str):
+    out_dir = os.path.expanduser('~/.config/sway')
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, 'outputs')
+    content = f"# Written by dex-scale\noutput * scale {scale_str}\n"
+    try:
+        with open(out_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        return True
+    except Exception as e:
+        print(f"Error escribiendo {out_path}: {e}", file=sys.stderr)
+        return False
+
+def apply_sway_scale(scale_val):
+    scale_str = str(scale_val)
+    update_sway_outputs_file(scale_str)
+    sway_sock = os.environ.get('SWAYSOCK')
+    if not sway_sock:
+        # Search for active sway socket
+        run_dir = os.environ.get('XDG_RUNTIME_DIR', '/run/user/0')
+        socks = [os.path.join(run_dir, f) for f in os.listdir(run_dir) if f.startswith('sway-ipc.') and f.endswith('.sock')]
+        if socks:
+            socks.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+            sway_sock = socks[0]
+
+    if sway_sock and os.path.exists(sway_sock):
+        try:
+            subprocess.run(
+                ['swaymsg', '-s', sway_sock, 'output', '*', 'scale', scale_str],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1
+            )
+            return True
+        except Exception:
+            return False
+    return False
+
+def main():
+    info = get_display_telemetry()
+    arg = sys.argv[1] if len(sys.argv) > 1 else '--status'
+
+    if arg == '--scale':
+        print(info['scale_str'])
+    elif arg == '--json':
+        print(json.dumps(info, indent=2))
+    elif arg == '--env':
+        update_sway_outputs_file(info['scale_str'])
+        print(f"export GDK_SCALE={info['gdk_scale']}")
+        print(f"export GDK_DPI_SCALE={info['gdk_dpi_scale']}")
+        print(f"export QT_AUTO_SCREEN_SCALE_FACTOR=1")
+        print(f"export QT_SCALE_FACTOR={info['scale_str']}")
+        print(f"export XFT_DPI={info['dpi']}")
+        print(f"export DEX_DETECTED_SCALE={info['scale_str']}")
+    elif arg == '--firefox':
+        update_firefox_profile(info['scale_str'])
+        print(info['scale_str'])
+    elif arg == '--apply':
+        update_firefox_profile(info['scale_str'])
+        sway_applied = apply_sway_scale(info['scale'])
+        disp = info['display']
+        print(f"[dex-scale] Mode: {info['mode'].upper()} | Display: {disp.get('w', '?')}x{disp.get('h', '?')} @ {disp.get('dpi', '?')}dpi | Scale: {info['scale_str']}x | Sway: {'applied' if sway_applied else 'skipped'}")
+    else:
+        disp = info['display']
+        print(f"==================================================")
+        print(f"  Omarchy DeX Auto-Scale Telemetry")
+        print(f"==================================================")
+        print(f"  Active mode       : {info['mode'].upper()} ({'Samsung DeX / desktop' if info['is_dex'] else 'phone screen'})")
+        print(f"  Base resolution   : {disp.get('w', '?')}x{disp.get('h', '?')} px")
+        print(f"  Android density   : {disp.get('dpi', '?')} dpi")
+        print(f"  Computed scale    : {info['scale_str']}x")
+        print(f"  Font DPI          : {info['dpi']} dpi")
+        print(f"  GDK_SCALE         : {info['gdk_scale']} (DPI_SCALE: {info['gdk_dpi_scale']})")
+        print(f"  Sway output       : {'running' if info['is_sway'] else 'not running'}")
+        print(f"==================================================")
+
+if __name__ == '__main__':
+    main()

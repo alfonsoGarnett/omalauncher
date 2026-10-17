@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+"""
+omarchy-waybar-scale: scale every Waybar theme at once.
+Recomputes any scale factor (e.g. 1.4x) for all themes from the untouched base templates
+(~/.config/waybar-themes.base) and applies it.
+"""
+import os
+import sys
+import shutil
+import re
+import subprocess
+
+BASE_DIR = os.path.expanduser("~/.config/waybar-themes.base")
+THEMES_DIR = os.path.expanduser("~/.config/waybar-themes")
+SCALE_FILE = os.path.join(THEMES_DIR, ".scale")
+CURRENT_FILE = os.path.join(THEMES_DIR, ".current")
+WAYBAR_DIR = os.path.expanduser("~/.config/waybar")
+
+def get_current_scale():
+    if os.path.exists(SCALE_FILE):
+        try:
+            with open(SCALE_FILE, "r", encoding="utf-8") as f:
+                val = float(f.read().strip())
+                return val
+        except Exception:
+            pass
+    return 1.40
+
+def scale_css_val(val_str, scale):
+    def repl(m):
+        num = float(m.group(1))
+        unit = m.group(2)
+        if unit is None:
+            unit = "px"
+        if num == 0:
+            return f"0{unit if unit != 'px' else ''}"
+        scaled = round(num * scale)
+        return f"{scaled}{unit}"
+    return re.sub(r'(-?\d+(?:\.\d+)?)(px|pt|em|rem)?', repl, val_str)
+
+def scale_css(css, scale):
+    lines = []
+    target_props = {
+        'font-size', 'padding', 'padding-left', 'padding-right', 'padding-top', 'padding-bottom',
+        'margin', 'margin-left', 'margin-right', 'margin-top', 'margin-bottom',
+        'border-radius', 'min-height', 'min-width', 'border-bottom-width', 'border-top-width'
+    }
+    for line in css.splitlines():
+        m = re.match(r'^(\s*)([a-zA-Z0-9_-]+)(\s*:\s*)([^;]+)(;?.*)$', line)
+        if m:
+            prefix, prop, sep, val, suffix = m.groups()
+            if prop in target_props:
+                val_clean = val.strip()
+                if prop in ('min-height', 'min-width') and val_clean in ('0', '0px'):
+                    lines.append(line)
+                    continue
+                scaled_val = scale_css_val(val_clean, scale)
+                lines.append(f"{prefix}{prop}{sep}{scaled_val}{suffix}")
+                continue
+        lines.append(line)
+    return '\n'.join(lines)
+
+def scale_config(text, scale):
+    target_json_keys = ('height', 'width', 'spacing', 'border-radius', 'margin-left', 'margin-right', 'margin-top', 'margin-bottom')
+    for k in target_json_keys:
+        text = re.sub(rf'\"{k}\"\s*:\s*(\d+)', lambda m: f'\"{k}\": {round(int(m.group(1)) * scale)}', text)
+    text = re.sub(r'(size=[\'\"])(\d+)([\'\"])', lambda m: f'{m.group(1)}{round(int(m.group(2)) * scale)}{m.group(3)}', text)
+    return text
+
+def apply_scale_to_all(scale):
+    if not os.path.isdir(BASE_DIR):
+        print(f"Error: the base folder {BASE_DIR} doesn't exist", file=sys.stderr)
+        sys.exit(1)
+
+    os.makedirs(THEMES_DIR, exist_ok=True)
+
+    # Keep .current if it exists
+    current_theme = "V2"
+    if os.path.exists(CURRENT_FILE):
+        try:
+            with open(CURRENT_FILE, "r", encoding="utf-8") as f:
+                c = f.read().strip()
+                if c:
+                    current_theme = c
+        except Exception:
+            pass
+
+    # Go through each base theme
+    for item in sorted(os.listdir(BASE_DIR)):
+        src_item = os.path.join(BASE_DIR, item)
+        dst_item = os.path.join(THEMES_DIR, item)
+        if not os.path.isdir(src_item):
+            continue
+
+        if os.path.exists(dst_item):
+            shutil.rmtree(dst_item)
+        shutil.copytree(src_item, dst_item)
+
+        for root, dirs, files in os.walk(dst_item):
+            for f in files:
+                p = os.path.join(root, f)
+                if f.endswith('.css'):
+                    with open(p, 'r', encoding='utf-8', errors='ignore') as fp:
+                        c = fp.read()
+                    with open(p, 'w', encoding='utf-8') as fp:
+                        fp.write(scale_css(c, scale))
+                elif f.endswith(('.jsonc', '.json')) or f == 'config':
+                    with open(p, 'r', encoding='utf-8', errors='ignore') as fp:
+                        c = fp.read()
+                    with open(p, 'w', encoding='utf-8') as fp:
+                        fp.write(scale_config(c, scale))
+                elif f.endswith('.sh'):
+                    os.chmod(p, 0o755)
+
+    # Save the new scale
+    with open(SCALE_FILE, "w", encoding="utf-8") as f:
+        f.write(f"{scale:.2f}\n")
+
+    # Restore the current theme file
+    with open(CURRENT_FILE, "w", encoding="utf-8") as f:
+        f.write(f"{current_theme}\n")
+
+    # Re-apply the current theme live
+    theme_script = os.path.expanduser("~/.local/bin/omarchy-waybar-theme")
+    if os.path.isfile(theme_script):
+        subprocess.run([theme_script, current_theme], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    if shutil.which("notify-send"):
+        try:
+            subprocess.run([
+                "notify-send", "-a", "omarchy",
+                "󰏘 Waybar scale",
+                f"Scale {scale:.2f}x saved and applied to every theme."
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+    print(f"Scale {scale:.2f}x applied to every Waybar theme.")
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: omarchy-waybar-scale [get | set <value> | gui | apply]")
+        sys.exit(1)
+
+    cmd = sys.argv[1].lower()
+    if cmd == "get":
+        print(f"{get_current_scale():.2f}")
+    elif cmd == "set":
+        if len(sys.argv) < 3:
+            print("Error: give the scale (e.g. 1.4)", file=sys.stderr)
+            sys.exit(1)
+        try:
+            val = float(sys.argv[2])
+            val = max(0.5, min(3.0, val))
+        except ValueError:
+            print("Error: not a valid number", file=sys.stderr)
+            sys.exit(1)
+        apply_scale_to_all(val)
+    elif cmd == "apply":
+        val = get_current_scale()
+        apply_scale_to_all(val)
+    elif cmd == "gui":
+        gui_path = os.path.expanduser("~/.local/bin/omarchy-waybar-scale-gui")
+        if os.path.isfile(gui_path):
+            os.execv(gui_path, [gui_path])
+        else:
+            print("GUI no encontrada", file=sys.stderr)
+            sys.exit(1)
+    else:
+        try:
+            val = float(cmd)
+            val = max(0.5, min(3.0, val))
+            apply_scale_to_all(val)
+        except ValueError:
+            print(f"Unknown command: {cmd}", file=sys.stderr)
+            sys.exit(1)
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,443 @@
+#!/usr/bin/env python3
+"""
+omarchy-widget-viewer: a native GTK3 viewer (through ctypes on libgtk-3.so.0) that opens any Omalauncher .owl
+widget on the Wayland/DeX desktop.
+"""
+import ctypes
+import glob
+import os
+import subprocess
+import sys
+import time
+
+WIDGETS_DIR = os.path.expanduser("~/.config/omalauncher/widgets")
+PREVIEW_DIR = os.path.join(WIDGETS_DIR, ".preview")
+
+FRIENDLY_NAMES = {
+    '10-today.owl': ('  Calendar and weather (Today)', "Today's events, a clock and the forecast"),
+    '20-fetch.owl': ('  System sheet (Fetch)', 'Device specs: SoC, RAM and storage'),
+    '30-niagara.owl': ('󰀲  Niagara app launcher', 'Favorite Android apps and folders'),
+    '35-droid.owl': ('󰟰  ADB bridge & wireless debugging', 'ADB connection status, pairing and diagnostics'),
+    '40-dex-control.owl': ('󰊗  DeX control & telemetry', 'Live CPU, RAM and Adreno GPU, plus launchers'),
+    '42-cheatsheet.owl': ('  Tiling shortcuts cheatsheet', 'Sway, DeX and Spanish keyboard shortcuts'),
+    '45-terminal.owl': ('  Built-in terminal', 'An interactive Linux terminal'),
+    '50-btop.owl': ('  Process monitor (Btop)', 'Live system resources'),
+    '60-owl.owl': ('󰏒  Pixel owl pet', 'An interactive pixel-art pet'),
+    'market-simonschubert-earthquakes.owl': ('  Live earthquakes', 'Recent seismic activity worldwide'),
+    'market-simonschubert-feeds.owl': ('  RSS feeds and news', 'Latest news and tech headlines'),
+    'market-simonschubert-lava-lamp.owl': ('  Retro lava lamp', 'A retro generative animation'),
+    'market-simonschubert-planes-overhead.owl': ('  Planes overhead', 'Commercial flights above you'),
+    'market-simonschubert-sun-and-moon.owl': ('  Sun and moon', 'Sun position, moon phase and daylight'),
+    'market-ssalentin-claude-limits.owl': ('󰚩  Claude AI limits', 'Anthropic Claude usage and quotas'),
+}
+
+def ensure_wayland_env():
+    if not os.environ.get("WAYLAND_DISPLAY"):
+        if os.path.exists("/run/user/0/wayland-1"):
+            os.environ["WAYLAND_DISPLAY"] = "wayland-1"
+        elif os.path.exists("/run/user/0/wayland-0"):
+            os.environ["WAYLAND_DISPLAY"] = "wayland-0"
+    os.environ["GDK_BACKEND"] = "wayland"
+
+def get_widget_list():
+    files = glob.glob(os.path.join(WIDGETS_DIR, "*.owl"))
+    widgets = []
+    for f in sorted(files):
+        fname = os.path.basename(f)
+        if fname.startswith('.') or fname.startswith('test'):
+            continue
+        if fname in FRIENDLY_NAMES:
+            title, desc = FRIENDLY_NAMES[fname]
+        else:
+            title = "󰜭  " + fname.replace('.owl', '').replace('-', ' ').title()
+            desc = 'Widget de Omalauncher'
+        widgets.append((fname, title, desc, f))
+    return widgets
+
+def refresh_preview(widget_name, force_check=False):
+    widget_path = os.path.join(WIDGETS_DIR, widget_name)
+    png_path = os.path.join(PREVIEW_DIR, f"{widget_name}.png")
+    try:
+        subprocess.run(
+            ['owl-send', widget_name, 'refresh'],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=1.5
+        )
+    except Exception:
+        pass
+    if force_check or not os.path.isfile(png_path):
+        try:
+            subprocess.run(
+                ['owl-check', widget_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=3.5
+            )
+        except Exception:
+            pass
+
+def launch_widget_gui(widget_name, title):
+    ensure_wayland_env()
+
+    if 'mouse' in widget_name:
+        subprocess.Popen(['/root/.local/bin/omarchy-mouse-gui'])
+        return
+    if 'cheatsheet' in widget_name:
+        subprocess.Popen(['foot', '--app-id=omarchy-cheatsheet', '-e', '/root/.local/bin/omarchy-cheatsheet'])
+        return
+    if 'btop' in widget_name:
+        subprocess.Popen(['foot', '-e', 'btop'])
+        return
+    if '45-terminal' in widget_name:
+        subprocess.Popen(['foot'])
+        return
+
+    png_path = os.path.join(PREVIEW_DIR, f"{widget_name}.png")
+    screen_png_path = os.path.join(PREVIEW_DIR, f"{widget_name}.screen.png")
+
+    if not os.path.isfile(png_path):
+        refresh_preview(widget_name, force_check=True)
+    else:
+        # Refresh in the background, so the window opens right away
+        subprocess.Popen(
+            ['owl-send', widget_name, 'refresh'],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+
+    if not os.path.isfile(png_path):
+        subprocess.run([
+            'notify-send', '-a', 'omarchy',
+            '󰞖 Widget Error',
+            f'No preview found for {widget_name}'
+        ])
+        return
+
+    glib = ctypes.CDLL("libglib-2.0.so.0")
+    gobj = ctypes.CDLL("libgobject-2.0.so.0")
+    gdk = ctypes.CDLL("libgdk-3.so.0")
+    gtk = ctypes.CDLL("libgtk-3.so.0")
+    pixbuf = ctypes.CDLL("libgdk_pixbuf-2.0.so.0")
+
+    glib.g_set_prgname.argtypes = [ctypes.c_char_p]
+    glib.g_set_application_name.argtypes = [ctypes.c_char_p]
+    glib.g_timeout_add_seconds.argtypes = [ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
+    glib.g_timeout_add_seconds.restype = ctypes.c_uint
+
+    gobj.g_object_unref.argtypes = [ctypes.c_void_p]
+    gobj.g_signal_connect_data.argtypes = [
+        ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p,
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int
+    ]
+    gobj.g_signal_connect_data.restype = ctypes.c_ulong
+
+    pixbuf.gdk_pixbuf_new_from_file.argtypes = [ctypes.c_char_p, ctypes.c_void_p]
+    pixbuf.gdk_pixbuf_new_from_file.restype = ctypes.c_void_p
+    pixbuf.gdk_pixbuf_get_width.argtypes = [ctypes.c_void_p]
+    pixbuf.gdk_pixbuf_get_width.restype = ctypes.c_int
+    pixbuf.gdk_pixbuf_get_height.argtypes = [ctypes.c_void_p]
+    pixbuf.gdk_pixbuf_get_height.restype = ctypes.c_int
+    pixbuf.gdk_pixbuf_scale_simple.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+    pixbuf.gdk_pixbuf_scale_simple.restype = ctypes.c_void_p
+
+    gtk.gtk_init.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    gtk.gtk_window_new.argtypes = [ctypes.c_int]
+    gtk.gtk_window_new.restype = ctypes.c_void_p
+    gtk.gtk_window_set_title.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    gtk.gtk_window_set_default_size.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+    gtk.gtk_window_set_position.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    gtk.gtk_window_resize.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+    gtk.gtk_container_set_border_width.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    gtk.gtk_container_add.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+
+    gtk.gtk_css_provider_new.restype = ctypes.c_void_p
+    gtk.gtk_css_provider_load_from_data.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_ssize_t, ctypes.c_void_p]
+    gdk.gdk_screen_get_default.restype = ctypes.c_void_p
+    gtk.gtk_style_context_add_provider_for_screen.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint]
+    gtk.gtk_widget_get_style_context.argtypes = [ctypes.c_void_p]
+    gtk.gtk_widget_get_style_context.restype = ctypes.c_void_p
+    gtk.gtk_style_context_add_class.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+
+    gtk.gtk_box_new.argtypes = [ctypes.c_int, ctypes.c_int]
+    gtk.gtk_box_new.restype = ctypes.c_void_p
+    gtk.gtk_box_pack_start.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+    gtk.gtk_box_pack_end.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+
+    gtk.gtk_scrolled_window_new.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    gtk.gtk_scrolled_window_new.restype = ctypes.c_void_p
+    gtk.gtk_scrolled_window_set_policy.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+
+    gtk.gtk_image_new.restype = ctypes.c_void_p
+    gtk.gtk_image_set_from_pixbuf.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+
+    gtk.gtk_label_new.argtypes = [ctypes.c_char_p]
+    gtk.gtk_label_new.restype = ctypes.c_void_p
+    gtk.gtk_label_set_text.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    gtk.gtk_widget_set_halign.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    gtk.gtk_widget_set_valign.argtypes = [ctypes.c_void_p, ctypes.c_int]
+
+    gtk.gtk_button_new_with_label.argtypes = [ctypes.c_char_p]
+    gtk.gtk_button_new_with_label.restype = ctypes.c_void_p
+    gtk.gtk_button_set_label.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    gtk.gtk_widget_show_all.argtypes = [ctypes.c_void_p]
+    gtk.gtk_widget_destroy.argtypes = [ctypes.c_void_p]
+
+    def add_class(widget, cls_name):
+        ctx = gtk.gtk_widget_get_style_context(widget)
+        gtk.gtk_style_context_add_class(ctx, cls_name.encode('utf-8'))
+
+    glib.g_set_prgname(b"omarchy-widget-viewer")
+    glib.g_set_application_name(b"Omarchy Widget Viewer")
+    gtk.gtk_init(None, None)
+
+    window = gtk.gtk_window_new(0)
+    gtk.gtk_window_set_title(window, f"󰞖 {title}".encode('utf-8'))
+    gtk.gtk_window_set_default_size(window, 480, 660)
+    gtk.gtk_window_set_position(window, 1)  # CENTER
+    gtk.gtk_container_set_border_width(window, 12)
+
+    css = b"""
+    * {
+        font-family: "JetBrains Mono", "Symbols Nerd Font Mono", "DejaVu Sans Mono", monospace;
+    }
+    window {
+        background-color: #1a1b26;
+        color: #c0caf5;
+        border: 2px solid #e0af68;
+    }
+    .top-bar {
+        background-color: #16161e;
+        border-radius: 6px;
+        padding: 8px 12px;
+        border: 1px solid #414868;
+    }
+    .widget-title {
+        font-size: 14px;
+        font-weight: bold;
+        color: #e0af68;
+    }
+    .widget-sub {
+        font-size: 11px;
+        color: #9ece6a;
+    }
+    .card-frame {
+        background-color: #13141c;
+        border-radius: 8px;
+        padding: 10px;
+        border: 1px solid #292e42;
+    }
+    button.tool-btn {
+        background-color: #24283b;
+        color: #7aa2f7;
+        border-radius: 6px;
+        padding: 6px 12px;
+        border: 1px solid #7aa2f7;
+        font-weight: bold;
+    }
+    button.tool-btn:hover {
+        background-color: #7aa2f7;
+        color: #16161e;
+    }
+    button.close-btn {
+        background-color: #f7768e;
+        color: #16161e;
+        border-radius: 6px;
+        padding: 6px 12px;
+        border: none;
+        font-weight: bold;
+    }
+    button.close-btn:hover {
+        background-color: #ff9e64;
+    }
+    """
+    provider = gtk.gtk_css_provider_new()
+    gtk.gtk_css_provider_load_from_data(provider, css, len(css), None)
+    screen = gdk.gdk_screen_get_default()
+    gtk.gtk_style_context_add_provider_for_screen(screen, provider, 600)
+
+    main_box = gtk.gtk_box_new(1, 10)
+    gtk.gtk_container_add(window, main_box)
+
+    # Barra superior
+    top_bar = gtk.gtk_box_new(0, 8)
+    add_class(top_bar, "top-bar")
+
+    title_col = gtk.gtk_box_new(1, 2)
+    lbl_title = gtk.gtk_label_new(title.encode('utf-8'))
+    add_class(lbl_title, "widget-title")
+    gtk.gtk_widget_set_halign(lbl_title, 1)
+
+    lbl_sub = gtk.gtk_label_new(f"● Live · {widget_name}".encode('utf-8'))
+    add_class(lbl_sub, "widget-sub")
+    gtk.gtk_widget_set_halign(lbl_sub, 1)
+
+    gtk.gtk_box_pack_start(title_col, lbl_title, 0, 0, 0)
+    gtk.gtk_box_pack_start(title_col, lbl_sub, 0, 0, 0)
+    gtk.gtk_box_pack_start(top_bar, title_col, 1, 1, 0)
+    gtk.gtk_box_pack_start(main_box, top_bar, 0, 0, 0)
+
+    # A scrolling image area
+    scrolled = gtk.gtk_scrolled_window_new(None, None)
+    gtk.gtk_scrolled_window_set_policy(scrolled, 1, 1)  # AUTOMATIC
+
+    img_box = gtk.gtk_box_new(1, 0)
+    add_class(img_box, "card-frame")
+    gtk.gtk_widget_set_halign(img_box, 3)
+    gtk.gtk_widget_set_valign(img_box, 3)
+
+    img_widget = gtk.gtk_image_new()
+    gtk.gtk_box_pack_start(img_box, img_widget, 1, 1, 0)
+    gtk.gtk_container_add(scrolled, img_box)
+    gtk.gtk_box_pack_start(main_box, scrolled, 1, 1, 0)
+
+    state = {"full": False}
+
+    def load_image():
+        target = screen_png_path if (state["full"] and os.path.isfile(screen_png_path)) else png_path
+        if not os.path.isfile(target):
+            return
+        pb = pixbuf.gdk_pixbuf_new_from_file(target.encode('utf-8'), None)
+        if not pb:
+            return
+        w = pixbuf.gdk_pixbuf_get_width(pb)
+        h = pixbuf.gdk_pixbuf_get_height(pb)
+        # Keep it at its native 1:1 size, sharp (no distortion or blur)
+        if state["full"] and w > 0:
+            target_w = 900
+            new_h = max(1, int(h * (target_w / float(w))))
+            scaled = pixbuf.gdk_pixbuf_scale_simple(pb, target_w, new_h, 2)
+            gobj.g_object_unref(pb)
+            pb = scaled
+        gtk.gtk_image_set_from_pixbuf(img_widget, pb)
+        gobj.g_object_unref(pb)
+
+    load_image()
+
+    # Botonera inferior
+    btn_bar = gtk.gtk_box_new(0, 8)
+
+    btn_refresh = gtk.gtk_button_new_with_label("  Refresh".encode('utf-8'))
+    add_class(btn_refresh, "tool-btn")
+    gtk.gtk_box_pack_start(btn_bar, btn_refresh, 0, 0, 0)
+
+    btn_edit = gtk.gtk_button_new_with_label("  Edit .owl".encode('utf-8'))
+    add_class(btn_edit, "tool-btn")
+    gtk.gtk_box_pack_start(btn_bar, btn_edit, 0, 0, 0)
+
+    btn_mode = None
+    if os.path.isfile(screen_png_path):
+        btn_mode = gtk.gtk_button_new_with_label("󰕰  Expanded view".encode('utf-8'))
+        add_class(btn_mode, "tool-btn")
+        gtk.gtk_box_pack_start(btn_bar, btn_mode, 0, 0, 0)
+
+    btn_close = gtk.gtk_button_new_with_label("✕  Close".encode('utf-8'))
+    add_class(btn_close, "close-btn")
+    gtk.gtk_box_pack_end(btn_bar, btn_close, 0, 0, 0)
+
+    gtk.gtk_box_pack_start(main_box, btn_bar, 0, 0, 0)
+
+    CB_CLICK = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p)
+    CB_DESTROY = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p)
+    CB_TIMER = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p)
+
+    def on_refresh(w, u):
+        gtk.gtk_label_set_text(lbl_sub, f"⏳ Refreshing {widget_name}...".encode('utf-8'))
+        refresh_preview(widget_name, force_check=True)
+        load_image()
+        gtk.gtk_label_set_text(lbl_sub, f"● Updated · {widget_name}".encode('utf-8'))
+
+    def on_edit(w, u):
+        subprocess.Popen(['foot', '-e', 'nvim', os.path.join(WIDGETS_DIR, widget_name)])
+
+    def on_mode(w, u):
+        state["full"] = not state["full"]
+        if state["full"]:
+            gtk.gtk_button_set_label(btn_mode, "󰆧  Card view".encode('utf-8'))
+            gtk.gtk_window_resize(window, 920, 680)
+        else:
+            gtk.gtk_button_set_label(btn_mode, "󰕰  Expanded view".encode('utf-8'))
+            gtk.gtk_window_resize(window, 480, 660)
+        load_image()
+
+    def on_close(w, u):
+        gtk.gtk_widget_destroy(window)
+
+    def on_destroy(w, u):
+        gtk.gtk_main_quit()
+
+    def on_timer(u):
+        subprocess.Popen(
+            ['owl-send', widget_name, 'refresh'],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        load_image()
+        return 1
+
+    c_refresh = CB_CLICK(on_refresh)
+    c_edit = CB_CLICK(on_edit)
+    c_mode = CB_CLICK(on_mode)
+    c_close = CB_CLICK(on_close)
+    c_destroy = CB_DESTROY(on_destroy)
+    c_timer = CB_TIMER(on_timer)
+
+    gobj.g_signal_connect_data(btn_refresh, b"clicked", c_refresh, None, None, 0)
+    gobj.g_signal_connect_data(btn_edit, b"clicked", c_edit, None, None, 0)
+    if btn_mode:
+        gobj.g_signal_connect_data(btn_mode, b"clicked", c_mode, None, None, 0)
+    gobj.g_signal_connect_data(btn_close, b"clicked", c_close, None, None, 0)
+    gobj.g_signal_connect_data(window, b"destroy", c_destroy, None, None, 0)
+    glib.g_timeout_add_seconds(10, c_timer, None)
+
+    gtk.gtk_widget_show_all(window)
+    gtk.gtk_main()
+
+def pick_and_launch():
+    ensure_wayland_env()
+    widgets = get_widget_list()
+    entries = []
+    widget_map = {}
+    for fname, title, desc, path in widgets:
+        line = f"{title}  —  {desc}  [{fname}]"
+        entries.append(line)
+        widget_map[line] = (fname, title)
+
+    input_text = "\n".join(entries)
+    try:
+        subprocess.run(['pkill', '-x', 'wofi'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        p = subprocess.Popen(
+            ['wofi', '--dmenu', '-i', '-p', '󰞖 Pick a widget to open:'],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True
+        )
+        chosen, _ = p.communicate(input=input_text)
+        chosen = chosen.strip()
+        if not chosen:
+            return
+        if chosen in widget_map:
+            fname, title = widget_map[chosen]
+            launch_widget_gui(fname, title)
+            return
+        # Fall back to a partial file-name match
+        for fname, title, desc, path in widgets:
+            if fname in chosen or title in chosen:
+                launch_widget_gui(fname, title)
+                return
+    except Exception as e:
+        print(f"Picker error: {e}", file=sys.stderr)
+
+def main():
+    if len(sys.argv) > 1:
+        target = sys.argv[1]
+        fname = os.path.basename(target)
+        if not fname.endswith('.owl'):
+            fname += '.owl'
+        title = FRIENDLY_NAMES.get(fname, (f"󰜭  {fname}", ''))[0]
+        launch_widget_gui(fname, title)
+    else:
+        pick_and_launch()
+
+if __name__ == '__main__':
+    main()

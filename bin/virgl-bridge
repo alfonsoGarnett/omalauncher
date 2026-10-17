@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# VirGL Unix socket to TCP bridge on Arch Linux
+SOCKET="/tmp/.virgl_test"
+PIDFILE="/tmp/virgl-bridge.pid"
+
+# Ignore SIGHUP completely so subshells/terminals exiting do not kill the daemon
+trap '' HUP
+echo $$ > "$PIDFILE"
+trap 'rm -f "$PIDFILE" "$SOCKET"; exit 0' INT TERM
+
+while true; do
+    rm -f "$SOCKET"
+    socat UNIX-LISTEN:"$SOCKET",fork,reuseaddr,unlink-early TCP:127.0.0.1:25282 2>/dev/null
+    sleep 0.2
+done

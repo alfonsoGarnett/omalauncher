@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""
+dex-resolution: list and change the real resolution (display mode) of the Samsung DeX
+external monitor, through Android (cmd display).
+
+  dex-resolution list            supported modes: "WIDTHxHEIGHT@HZ", the current one with '*'
+  dex-resolution current         active mode: "WIDTHxHEIGHT@HZ"
+  dex-resolution set WxH@HZ      apply the mode without saving it (to try it)
+  dex-resolution store WxH@HZ    apply the mode and save it in Android
+  dex-resolution reset           go back to the monitor's default mode
+  dex-resolution id              the DeX display's id in Android
+"""
+import re
+import subprocess
+import sys
+
+
+def droid(*args, timeout=4.0):
+    return subprocess.run(
+        ["droid", *args], stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout
+    ).stdout.decode("utf-8", errors="ignore")
+
+
+def external_display():
+    """(id, modes, active mode id) of the first external display that's on."""
+    out = droid("dumpsys", "display")
+    for line in out.splitlines():
+        if "mBaseDisplayInfo=DisplayInfo{" not in line or "type EXTERNAL" not in line:
+            continue
+        m_id = re.search(r"displayId (\d+)", line)
+        if not m_id or int(m_id.group(1)) == 0 or "state ON" not in line:
+            continue
+        modes = {}
+        for m in re.finditer(r"\{id=(\d+), [^}]*?width=(\d+), height=(\d+), fps=([\d.]+)", line):
+            modes[int(m.group(1))] = (int(m.group(2)), int(m.group(3)), round(float(m.group(4))))
+        m_cur = re.search(r", mode (\d+),", line)
+        return int(m_id.group(1)), modes, int(m_cur.group(1)) if m_cur else None
+    return None, {}, None
+
+
+def fmt(mode):
+    w, h, hz = mode
+    return f"{w}x{h}@{hz}"
+
+
+def parse(text):
+    m = re.fullmatch(r"\s*(\d+)x(\d+)@(\d+)\s*", text)
+    if not m:
+        sys.exit(f"Invalid mode: {text} (use WIDTHxHEIGHT@HZ, e.g. 1920x1080@60)")
+    return int(m.group(1)), int(m.group(2)), int(m.group(3))
+
+
+def main():
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "list"
+    disp_id, modes, cur = external_display()
+    if disp_id is None:
+        sys.exit("No external DeX display is connected")
+
+    if cmd == "id":
+        print(disp_id)
+    elif cmd == "current":
+        print(fmt(modes[cur]) if cur in modes else "?")
+    elif cmd == "list":
+        seen = []
+        for mid, mode in sorted(modes.items(), key=lambda kv: (-kv[1][0] * kv[1][1], -kv[1][2])):
+            if mode in seen:
+                continue
+            seen.append(mode)
+            print(("*" if mid == cur else " ") + fmt(mode))
+    elif cmd in ("set", "store"):
+        if len(sys.argv) < 3:
+            sys.exit("Missing the mode (e.g. 1920x1080@60)")
+        w, h, hz = parse(sys.argv[2])
+        if (w, h, hz) not in modes.values():
+            sys.exit(f"{sys.argv[2]} isn't supported by this display")
+        droid("cmd", "display", "set-user-preferred-display-mode",
+              str(w), str(h), str(hz), str(disp_id), "true" if cmd == "store" else "false")
+        print(f"Mode {w}x{h}@{hz} applied to display {disp_id}")
+    elif cmd == "reset":
+        droid("cmd", "display", "clear-user-preferred-display-mode", str(disp_id))
+        print(f"Display {disp_id} is back to its default mode")
+    else:
+        sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main()

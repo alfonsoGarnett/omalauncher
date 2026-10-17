@@ -1,0 +1,28 @@
+#!/bin/bash
+# omarchy-play-audio: Clean, interactive audio player for Omarchy Sway
+# 1. Stops any existing audio playback so tracks don't overlap or pile up.
+# 2. Opens a compact floating terminal with MPV's clean console player (no black GPU box).
+
+FILE="$1"
+if [ -z "$FILE" ]; then
+    exit 0
+fi
+
+# Ensure Wayland environment variables are present
+export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/0}"
+
+# Stop previous audio playback instances so tracks never overlap
+pkill -f "foot.*omarchy-audio-player" 2>/dev/null || true
+pkill -f "mpv.*--no-video" 2>/dev/null || true
+
+TITLE="$(basename "$FILE")"
+
+# Send desktop notification
+notify-send -a "Omarchy Audio" -i audio-speakers "▶ Reproduciendo" "$TITLE" 2>/dev/null || true
+
+# Launch compact floating player
+exec foot --app-id=omarchy-audio-player \
+    -T "🎵 $TITLE" \
+    -o "main.pad=14x14" \
+    mpv --no-video --term-osd-bar "$FILE"

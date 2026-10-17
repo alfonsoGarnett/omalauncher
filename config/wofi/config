@@ -1,0 +1,9 @@
+# Wofi config for Omarchy DeX
+term=foot
+show=drun
+width=500
+height=400
+prompt=Search apps...
+insensitive=true
+single_click=true
+allow_images=true

@@ -1,0 +1,2 @@
+#!/bin/sh
+env -u GALLIUM_DRIVER -u MESA_LOADER_DRIVER_OVERRIDE /usr/bin/es2gears_wayland "$@"

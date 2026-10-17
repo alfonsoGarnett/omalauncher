@@ -1,0 +1,26 @@
+#!/bin/bash
+# antigravity doesn't take a positional prompt (claude does), so turn a trailing
+# bare prompt into -i "<prompt>": it opens interactively with the prompt sent.
+bin=/root/.local/share/mise/shims/antigravity
+case $1 in
+  agent|agents|changelog|help|install|mcp|mic-serve|models|plugin|plugins|remote-control|update)
+    exec "$bin" "$@" ;;
+esac
+args=("$@")
+n=${#args[@]}
+if (( n )); then
+  has_prompt=0
+  for a in "${args[@]}"; do
+    case $a in -p|-i|--print|--prompt|--prompt-interactive|--print=*|--prompt=*|--prompt-interactive=*) has_prompt=1 ;; esac
+  done
+  last=${args[n-1]}
+  prev=${args[n-2]:-}
+  case $prev in
+    --add-dir|--agent|--conversation|--effort|--input-format|--json-schema|--log-file|--mode|--model|--output-format|--print-timeout|--project) value_of_flag=1 ;;
+    *) value_of_flag=0 ;;
+  esac
+  if (( !has_prompt && !value_of_flag )) && [[ $last != -* ]]; then
+    args=("${args[@]:0:n-1}" -i "$last")
+  fi
+fi
+exec "$bin" --dangerously-skip-permissions "${args[@]}"

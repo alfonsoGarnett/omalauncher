@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# virgl-service: Manages and ensures VirGL + ANGLE acceleration bridge between Termux and Arch Linux
+
+check_socket_alive() {
+    python3 -c "
+import socket
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.settimeout(0.4)
+try:
+    s.connect('/tmp/.virgl_test')
+    s.close()
+    exit(0)
+except Exception:
+    exit(1)
+" 2>/dev/null
+}
+
+ensure_termux_virgl() {
+    if ! command -v droid >/dev/null 2>&1; then
+        return 1
+    fi
+
+    # Check if virgl_test_server_android is running in Termux
+    if ! droid 'run-as com.termux ps -ef' 2>/dev/null | grep -v grep | grep -q 'virgl_test_server_android'; then
+        droid 'run-as com.termux /data/data/com.termux/files/usr/bin/bash -c "
+            nohup /data/data/com.termux/files/usr/bin/virgl_test_server_android --angle-gl --multi-clients </dev/null >/dev/null 2>&1 &
+            disown -a
+        "' >/dev/null 2>&1 || true
+        sleep 0.5
+    fi
+
+    # Check if Termux socat bridge is running
+    if ! droid 'run-as com.termux ps -ef' 2>/dev/null | grep -v grep | grep -q 'socat TCP-LISTEN:25282'; then
+        droid 'run-as com.termux /data/data/com.termux/files/usr/bin/bash -c "
+            nohup /data/data/com.termux/files/usr/bin/socat TCP-LISTEN:25282,fork,reuseaddr UNIX-CONNECT:/data/data/com.termux/files/usr/tmp/.virgl_test </dev/null >/dev/null 2>&1 &
+            disown -a
+        "' >/dev/null 2>&1 || true
+        sleep 0.5
+    fi
+}
+
+ensure_arch_bridge() {
+    if ! check_socket_alive; then
+        if [ -f /tmp/virgl-bridge.pid ]; then
+            kill -9 "$(cat /tmp/virgl-bridge.pid 2>/dev/null)" 2>/dev/null || true
+            rm -f /tmp/virgl-bridge.pid
+        fi
+        pkill -9 -x virgl-bridge 2>/dev/null || true
+        pkill -9 -f "socat.*virgl_test" 2>/dev/null || true
+        rm -f /tmp/.virgl_test
+        setsid /usr/local/bin/virgl-bridge </dev/null >/dev/null 2>&1 &
+        sleep 0.6
+    fi
+}
+
+case "$1" in
+    start)
+        ensure_termux_virgl
+        ensure_arch_bridge
+        ;;
+    stop)
+        if [ -f /tmp/virgl-bridge.pid ]; then
+            kill -9 "$(cat /tmp/virgl-bridge.pid 2>/dev/null)" 2>/dev/null || true
+            rm -f /tmp/virgl-bridge.pid
+        fi
+        pkill -9 -x virgl-bridge 2>/dev/null || true
+        pkill -9 -f "socat.*virgl_test" 2>/dev/null || true
+        rm -f /tmp/.virgl_test
+        droid 'run-as com.termux /data/data/com.termux/files/usr/bin/killall -9 virgl_test_server_android socat' 2>/dev/null || true
+        ;;
+    status)
+        echo "=== VirGL Host (Termux) ==="
+        droid 'run-as com.termux ps -ef' 2>/dev/null | grep -E "virgl|socat" | grep -v grep || echo "Termux VirGL not running"
+        echo "=== VirGL Client (Arch Linux) ==="
+        if check_socket_alive; then
+            echo "Arch virgl-bridge is active and responsive (Adreno 840 bridge OK)"
+        else
+            echo "Arch virgl-bridge is NOT responsive"
+        fi
+        ls -la /tmp/.virgl_test 2>/dev/null || echo "Socket /tmp/.virgl_test not found"
+        ;;
+    *)
+        ensure_termux_virgl
+        ensure_arch_bridge
+        ;;
+esac

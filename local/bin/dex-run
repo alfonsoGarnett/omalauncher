@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# dex-run: Force running an application in Samsung DeX / Desktop Linux (Sway)
+export OMARCHY_TARGET=dex
+export WAYLAND_DISPLAY=wayland-1
+RUN_DIR="${XDG_RUNTIME_DIR:-/run/user/0}"
+SWAY_SOCKET=$(ls -t "$RUN_DIR"/sway-ipc.*.sock 2>/dev/null | head -1)
+[ -n "$SWAY_SOCKET" ] && export SWAYSOCK="$SWAY_SOCKET"
+unset MESA_LOADER_DRIVER_OVERRIDE
+
+if command -v dex-scale >/dev/null 2>&1; then
+    eval "$(dex-scale --env 2>/dev/null)"
+fi
+exec "$@"

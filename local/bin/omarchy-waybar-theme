@@ -1,0 +1,363 @@
+#!/usr/bin/env bash
+set -euo pipefail
+unset WAYLAND_SOCKET
+
+THEMES_DIR="$HOME/.config/waybar-themes"
+WAYBAR_DIR="$HOME/.config/waybar"
+STATE_FILE="$THEMES_DIR/.current"
+
+export GDK_BACKEND=wayland
+if [ -z "${WAYLAND_DISPLAY:-}" ]; then
+    if [ -S /run/user/0/wayland-1 ]; then
+        export WAYLAND_DISPLAY=wayland-1
+    else
+        export WAYLAND_DISPLAY=wayland-0
+    fi
+fi
+
+find_sway_sock() {
+    if [ -n "${SWAYSOCK:-}" ] && [ -S "$SWAYSOCK" ]; then
+        echo "$SWAYSOCK"
+        return
+    fi
+    ls -t /run/user/0/sway-ipc.*.sock 2>/dev/null | head -n1
+}
+export SWAYSOCK="$(find_sway_sock)"
+
+apply_theme() {
+    local theme="$1"
+    local src="$THEMES_DIR/$theme"
+    if [ ! -d "$src" ]; then
+        echo "Theme not found: $theme" >&2
+        exit 1
+    fi
+
+    # Clear the previous files in ~/.config/waybar, except colors.css
+    mkdir -p "$WAYBAR_DIR"
+    find "$WAYBAR_DIR" -mindepth 1 -maxdepth 1 ! -name "colors.css" -exec rm -rf {} +
+    cp -rf "$src/." "$WAYBAR_DIR/"
+    find "$WAYBAR_DIR" -type f -name "*.sh" -exec chmod +x {} +
+
+    echo "$theme" > "$STATE_FILE"
+
+    # Rebuild colors.css from the active Omarchy palette
+    "$HOME/.local/bin/omarchy-sync-theme" >/dev/null 2>&1 || true
+
+    # Close extra bars and earlier waybar scripts
+    pkill -f "waybar/bottom/config" 2>/dev/null || true
+    pkill -f "waybar/window.sh" 2>/dev/null || true
+    pkill -f "waybar/cava.sh" 2>/dev/null || true
+
+    # Reload Waybar live (SIGUSR2 reloads both config.jsonc and style.css)
+    if pgrep -x waybar >/dev/null 2>&1; then
+        pkill -SIGUSR2 waybar 2>/dev/null || true
+        sleep 0.3
+    fi
+    if ! pgrep -x waybar >/dev/null 2>&1; then
+        nohup /usr/local/bin/waybar >/tmp/waybar.log 2>&1 &
+        sleep 0.3
+    fi
+
+    notify-send -a "omarchy" "󰏘 Minimal Waybar Themes" "Theme applied: $theme" 2>/dev/null || true
+    echo "Waybar theme applied: $theme"
+}
+
+LAUNCHER_STYLE="$HOME/.config/omalauncher/style/style.toml"
+OMARCHY_STATE="$HOME/.local/state/omarchy/current"
+
+# Backgrounds of the active Omarchy theme: the theme's backgrounds/ and ~/.config/omarchy/backgrounds/<theme>/
+list_backgrounds() {
+    local theme; theme=$(cat "$OMARCHY_STATE/theme.name" 2>/dev/null || echo "")
+    [ -z "$theme" ] && return
+    for d in "$HOME/.config/omarchy/themes/$theme/backgrounds" \
+             "$HOME/.local/share/omarchy/themes/$theme/backgrounds" \
+             "$HOME/.config/omarchy/backgrounds/$theme"; do
+        [ -d "$d" ] && find "$d" -maxdepth 1 -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' \) -printf '%f\t%p\n'
+    done | sort -t$'\t' -k1,1 -u -V
+}
+
+pick_background() {
+    local current; current=$(basename "$(readlink "$OMARCHY_STATE/background" 2>/dev/null)" 2>/dev/null || echo "")
+    local list; list=$(list_backgrounds)
+    [ -z "$list" ] && { notify-send -a "omarchy" " Background" "The active theme has no backgrounds" 2>/dev/null || true; exit 0; }
+    local lines=()
+    while IFS=$'\t' read -r name _; do
+        if [ "$name" = "$current" ]; then lines+=("  $name"); else lines+=("   $name"); fi
+    done <<< "$list"
+    pkill -x wofi 2>/dev/null || true
+    local choice; choice=$(printf "%s\n" "${lines[@]}" | wofi --dmenu -i -p " Background (now: $current):" 2>/dev/null || true)
+    [ -z "$choice" ] && exit 0
+    local name; name=$(echo "$choice" | sed -E 's/^[^ ]* +//; s/^ +//')
+    local path; path=$(printf "%s\n" "$list" | awk -F'\t' -v n="$name" '$1==n {print $2; exit}')
+    [ -z "$path" ] && exit 0
+
+    # Save it in the launcher's style.toml (the launcher updates the link too)
+    if [ -f "$LAUNCHER_STYLE" ]; then
+        python3 - "$LAUNCHER_STYLE" "$name" <<'PY'
+import re, sys
+p, name = sys.argv[1], sys.argv[2]
+s = open(p).read()
+line = f'background = "{name}"'
+if re.search(r'(?m)^background\s*=.*$', s):
+    s = re.sub(r'(?m)^background\s*=.*$', lambda m: line, s, count=1)
+elif re.search(r'(?m)^theme\s*=.*$', s):
+    s = re.sub(r'(?m)^(theme\s*=.*)$', lambda m: m.group(1) + "\n" + line, s, count=1)
+else:
+    s = line + "\n" + s
+open(p, "w").write(s)
+PY
+    fi
+    ln -sfn "$path" "$OMARCHY_STATE/background"
+    swaymsg "output * bg \"$path\" fill" >/dev/null 2>&1 || true
+    notify-send -a "omarchy" " Background" "Background applied: $name" 2>/dev/null || true
+}
+
+# Scale of the whole desktop (like 125% / 150% on Windows): sway output scale, through dex-scale
+SYSTEM_SCALE_FILE="$HOME/.config/omarchy/dex-scale"
+
+pick_system_scale() {
+    local saved; saved=$(tr -d '[:space:]' 2>/dev/null < "$SYSTEM_SCALE_FILE" || echo "")
+    local lines=() opt label
+    if [ -z "$saved" ]; then lines+=("  Automatic (from the display)"); else lines+=("   Automatic (from the display)"); fi
+    local presets="1.0 1.25 1.5 1.75 2.0 2.25 2.5 3.0" is_preset=0
+    for opt in $presets; do
+        [ -n "$saved" ] && awk -v a="$saved" -v b="$opt" 'BEGIN{exit !(a+0==b+0)}' && is_preset=1
+    done
+    for opt in $presets; do
+        label="${opt}x  ($(awk -v v="$opt" 'BEGIN{printf "%d", v*100}')%)"
+        if [ -n "$saved" ] && awk -v a="$saved" -v b="$opt" 'BEGIN{exit !(a+0==b+0)}'; then
+            lines+=("  $label")
+        else
+            lines+=("   $label")
+        fi
+    done
+    if [ -n "$saved" ] && [ "$is_preset" = 0 ]; then
+        lines+=("  Custom: ${saved}x")
+    fi
+    lines+=("  Custom… (type your own value)")
+    local now; now=$("$HOME/.local/bin/dex-scale" --scale 2>/dev/null </dev/null || echo "?")
+    pkill -x wofi 2>/dev/null || true
+    local choice; choice=$(printf "%s\n" "${lines[@]}" | wofi --dmenu -i -p " System scale (now: ${now}x):" 2>/dev/null || true)
+    [ -z "$choice" ] && exit 0
+
+    if [[ "$choice" == *"Custom…"* ]]; then
+        local custom
+        custom=$(wofi --dmenu -p " Custom scale (0.5 to 4.0, e.g. 1.33):" </dev/null 2>/dev/null || true)
+        custom=$(echo "$custom" | tr ',' '.' | tr -d '[:space:]x%')
+        # Percentages work too: 133 -> 1.33
+        if [[ "$custom" =~ ^[0-9]+$ ]] && [ "$custom" -ge 50 ]; then
+            custom=$(awk -v v="$custom" 'BEGIN{printf "%.2f", v/100}')
+        fi
+        if ! [[ "$custom" =~ ^[0-9]+(\.[0-9]+)?$ ]] || ! awk -v v="$custom" 'BEGIN{exit !(v>=0.5 && v<=4.0)}'; then
+            notify-send -a "omarchy" " System scale" "Not a valid value: '$custom' (use 0.5 to 4.0)" 2>/dev/null || true
+            exit 0
+        fi
+        choice="${custom}x"
+    fi
+
+    mkdir -p "$(dirname "$SYSTEM_SCALE_FILE")"
+    if [[ "$choice" == *"Automatic"* ]]; then
+        rm -f "$SYSTEM_SCALE_FILE"
+    else
+        echo "$choice" | grep -oE '[0-9]+(\.[0-9]+)?x' | head -n1 | tr -d 'x' > "$SYSTEM_SCALE_FILE"
+    fi
+    "$HOME/.local/bin/dex-scale" --apply >/dev/null 2>&1 </dev/null || true
+    notify-send -a "omarchy" " System scale" "Scale applied: $("$HOME/.local/bin/dex-scale" --scale 2>/dev/null </dev/null)x" 2>/dev/null || true
+}
+
+# The DeX monitor's real resolution (Android's display mode), with a confirmation like on Windows
+pick_resolution() {
+    local prev; prev=$("$HOME/.local/bin/dex-resolution" current 2>/dev/null </dev/null || echo "")
+    local modes; modes=$("$HOME/.local/bin/dex-resolution" list 2>/dev/null </dev/null || true)
+    if [ -z "$modes" ]; then
+        notify-send -a "omarchy" " Resolution" "No external DeX display is connected" 2>/dev/null || true
+        exit 0
+    fi
+    local lines=() m w h hz
+    while IFS= read -r m; do
+        [ -z "$m" ] && continue
+        w=${m:1}; hz=${w#*@}; w=${w%@*}
+        if [ "${m:0:1}" = "*" ]; then lines+=("  ${w}  @ ${hz} Hz"); else lines+=("   ${w}  @ ${hz} Hz"); fi
+    done <<< "$modes"
+    lines+=("  Reset the monitor's default resolution")
+
+    pkill -x wofi 2>/dev/null || true
+    local choice; choice=$(printf "%s\n" "${lines[@]}" | wofi --dmenu -i -p " Resolution (now: ${prev/@/ @ } Hz):" 2>/dev/null || true)
+    [ -z "$choice" ] && exit 0
+
+    if [[ "$choice" == *"default resolution"* ]]; then
+        "$HOME/.local/bin/dex-resolution" reset >/dev/null 2>&1 </dev/null || true
+        notify-send -a "omarchy" " Resolution" "Default resolution restored" 2>/dev/null || true
+        exit 0
+    fi
+
+    local new; new=$(echo "$choice" | grep -oE '[0-9]+x[0-9]+ +@ +[0-9]+' | tr -d ' ')
+    [ -z "$new" ] || [ "$new" = "$prev" ] && exit 0
+
+    "$HOME/.local/bin/dex-resolution" set "$new" >/dev/null 2>&1 </dev/null || true
+    sleep 2
+    # If the screen goes black or nobody confirms within 15 s, it goes back to the previous one
+    local keep; keep=$(printf "%s\n" "  Keep ${new}" "  Go back to ${prev}" | timeout 15 wofi --dmenu -i -p "Keep this resolution? (reverts in 15 s)" 2>/dev/null || true)
+    if [[ "$keep" == *"Keep"* ]]; then
+        "$HOME/.local/bin/dex-resolution" store "$new" >/dev/null 2>&1 </dev/null || true
+        notify-send -a "omarchy" " Resolution" "Resolution saved: $new" 2>/dev/null || true
+    else
+        "$HOME/.local/bin/dex-resolution" set "$prev" >/dev/null 2>&1 </dev/null || true
+        notify-send -a "omarchy" " Resolution" "Restored: $prev" 2>/dev/null || true
+    fi
+    # Recompute the automatic scale for the new resolution
+    "$HOME/.local/bin/dex-scale" --apply >/dev/null 2>&1 </dev/null || true
+}
+
+# Edit a Waybar theme's style files (or the launcher's style.toml)
+edit_theme_style() {
+    local lines=("  launcher style.toml (Omalauncher)" "──────────────────────────────────────────────────")
+    for t in "${ORDER[@]}"; do
+        [ -d "$THEMES_DIR/$t" ] && lines+=("   $t")
+    done
+    pkill -x wofi 2>/dev/null || true
+    local choice; choice=$(printf "%s\n" "${lines[@]}" | wofi --dmenu -i -p " Edit the style of:" 2>/dev/null || true)
+    [ -z "$choice" ] && exit 0
+    [[ "$choice" == *"───"* ]] && exit 0
+
+    if [[ "$choice" == *"launcher style.toml"* ]]; then
+        foot --app-id=omarchy-style-editor -e nvim "$LAUNCHER_STYLE"
+        exit 0
+    fi
+
+    local theme; theme=$(echo "$choice" | sed -E 's/^ +//')
+    # Themes with a base template are edited there and scaled again; the others are edited directly
+    local dir="$HOME/.config/waybar-themes.base/$theme" from_base=1
+    if [ ! -d "$dir" ]; then dir="$THEMES_DIR/$theme"; from_base=0; fi
+    [ -d "$dir" ] || exit 0
+
+    local files=()
+    while IFS= read -r f; do files+=("$f"); done < <(cd "$dir" && find . -type f \( -name '*.css' -o -name '*.jsonc' -o -name '*.json' -o -name 'config' -o -name '*.sh' \) | sed 's|^\./||' | sort)
+    [ ${#files[@]} -eq 0 ] && exit 0
+    local file
+    if [ ${#files[@]} -eq 1 ]; then
+        file="${files[0]}"
+    else
+        file=$(printf "%s\n" "${files[@]}" | wofi --dmenu -i -p " $theme — file:" 2>/dev/null || true)
+        [ -z "$file" ] && exit 0
+    fi
+
+    foot --app-id=omarchy-style-editor -e nvim "$dir/$file"
+
+    if [ "$from_base" = 1 ]; then
+        "$HOME/.local/bin/omarchy-waybar-scale" apply >/dev/null 2>&1 || true
+    elif [ "$theme" = "$(cat "$STATE_FILE" 2>/dev/null)" ]; then
+        apply_theme "$theme"
+    fi
+}
+
+if [ $# -ge 1 ]; then
+    if [ "$1" = "scale" ] || [ "$1" = "--scale" ] || [ "$1" = "settings" ]; then
+        /root/.local/bin/omarchy-waybar-scale-gui &
+        exit 0
+    fi
+    if [ "$1" = "system-scale" ] || [ "$1" = "--system-scale" ]; then
+        pick_system_scale
+        exit 0
+    fi
+    if [ "$1" = "resolution" ] || [ "$1" = "--resolution" ]; then
+        pick_resolution
+        exit 0
+    fi
+    if [ "$1" = "wallpaper" ] || [ "$1" = "--wallpaper" ]; then
+        pick_background
+        exit 0
+    fi
+    apply_theme "$1"
+    exit 0
+fi
+
+CURRENT="V7"
+[ -f "$STATE_FILE" ] && CURRENT=$(cat "$STATE_FILE")
+
+CURRENT_SCALE="1.40"
+[ -f "$THEMES_DIR/.scale" ] && CURRENT_SCALE=$(cat "$THEMES_DIR/.scale" | tr -d '[:space:]')
+
+declare -A DESCRIPTIONS=(
+    ["Mac-Transparent"]="Mac-Transparent — transparent macOS look with a Cava visualizer"
+    ["V7"]="V7 — Material pills and a two-line clock (newest)"
+    ["V6"]="V6 — minimal bottom bar with an expandable MPRIS player"
+    ["V5"]="V5 — AxOS style with expandable groups"
+    ["V4.y"]="V4.y — end-4 style with a bar / dock toggle"
+    ["V4.x"]="V4.x — end-4 style with transitions and GameMode"
+    ["V4"]="V4 — classic end-4 style with the active window on two lines"
+    ["V3.Ωx"]="V3.Ωx — top bar plus an optional bottom bar ([BTMBAR])"
+    ["V3.Ω"]="V3.Ω — minimal, with stats you scroll through"
+    ["V3.xa"]="V3.xa — retro style with boxed [ ] modules"
+    ["V3"]="V3 — workspaces in Roman numerals (I–X)"
+    ["V2.8"]="V2.8 — Material UI with dynamic icons"
+    ["V2.4"]="V2.4 — Material UI with workspaces in kanji (一 二 三)"
+    ["V2"]="V2 — Material UI pills"
+    ["V1.5"]="V1.5 — minimal, with MPRIS and menus"
+    ["V1"]="V1 — classic minimal (the first version)"
+    ["Original"]="Original — Omarchy DeX's default bar"
+)
+
+ORDER=("Mac-Transparent" "V7" "V6" "V5" "V4.y" "V4.x" "V4" "V3.Ωx" "V3.Ω" "V3.xa" "V3" "V2.8" "V2.4" "V2" "V1.5" "V1" "Original")
+
+CURRENT_SYS_SCALE=$("$HOME/.local/bin/dex-scale" --scale 2>/dev/null </dev/null || echo "?")
+CURRENT_RES=$("$HOME/.local/bin/dex-resolution" current 2>/dev/null </dev/null || echo "no DeX")
+CURRENT_BG=$(basename "$(readlink "$OMARCHY_STATE/background" 2>/dev/null)" 2>/dev/null || echo "?")
+
+MENU_LINES=(
+    "  Waybar scale (now: ${CURRENT_SCALE}x)"
+    "  System scale (UI and text: ${CURRENT_SYS_SCALE}x)"
+    "  Display resolution (now: ${CURRENT_RES})"
+    "  Change the background (now: ${CURRENT_BG})"
+    "  Edit a theme's style"
+    "──────────────────────────────────────────────────"
+)
+
+for t in "${ORDER[@]}"; do
+    if [ -d "$THEMES_DIR/$t" ]; then
+        desc="${DESCRIPTIONS[$t]:-$t}"
+        if [ "$t" = "$CURRENT" ]; then
+            MENU_LINES+=("  $desc")
+        else
+            MENU_LINES+=("   $desc")
+        fi
+    fi
+done
+
+pkill -x wofi 2>/dev/null || true
+CHOICE=$(printf "%s\n" "${MENU_LINES[@]}" | wofi --dmenu -i -p "󰏘 Waybar theme (now: $CURRENT | scale: ${CURRENT_SCALE}x):" 2>/dev/null || true)
+
+[ -z "$CHOICE" ] && exit 0
+
+if [[ "$CHOICE" == *"Waybar scale"* ]]; then
+    /root/.local/bin/omarchy-waybar-scale-gui &
+    exit 0
+fi
+
+if [[ "$CHOICE" == *"System scale"* ]]; then
+    pick_system_scale
+    exit 0
+fi
+
+if [[ "$CHOICE" == *"Display resolution"* ]]; then
+    pick_resolution
+    exit 0
+fi
+
+if [[ "$CHOICE" == *"Change the background"* ]]; then
+    pick_background
+    exit 0
+fi
+
+if [[ "$CHOICE" == *"Edit a theme's style"* ]]; then
+    edit_theme_style
+    exit 0
+fi
+
+if [[ "$CHOICE" == *"───"* ]]; then
+    exit 0
+fi
+
+# The version name, before " — "
+SELECTED=$(echo "$CHOICE" | sed -E 's/^[ ]+//; s/ — .*$//')
+[ -n "$SELECTED" ] && apply_theme "$SELECTED"

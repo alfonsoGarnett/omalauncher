@@ -1,0 +1,147 @@
+{
+  "reload_style_on_change": true,
+  "layer": "top",
+  "position": "top",
+  "spacing": 0,
+  "height": 28,
+  "margin-top": 6,
+  "margin-left": 10,
+  "margin-right": 10,
+  "modules-left": [
+    "custom/omarchy",
+    "sway/workspaces",
+    "hyprland/workspaces",
+    "custom/visualizer"
+  ],
+  "modules-center": [
+    "custom/weather",
+    "clock",
+    "group/center-actions"
+  ],
+  "modules-right": [
+    "mpris",
+    "tray",
+    "custom/network",
+    "pulseaudio",
+    "cpu",
+    "memory",
+    "custom/battery",
+    "custom/power"
+  ],
+  "custom/omarchy": {
+    "format": "",
+    "on-click": "omarchy-menu",
+    "on-click-right": "xdg-terminal-exec",
+    "tooltip-format": "Omarchy menu (Super + Alt + Space)\nRight-click: terminal"
+  },
+  "sway/workspaces": {
+    "disable-scroll": true,
+    "all-outputs": true,
+    "on-click": "activate",
+    "format": "{name}"
+  },
+  "hyprland/workspaces": {
+    "on-click": "activate",
+    "format": "{name}"
+  },
+  "custom/visualizer": {
+    "exec": "~/.config/waybar/scripts/cava.sh",
+    "return-type": "json",
+    "format": "{}"
+  },
+  "custom/weather": {
+    "format": "{}",
+    "tooltip": true,
+    "interval": 900,
+    "exec": "~/.config/waybar/scripts/weather.sh",
+    "return-type": "json"
+  },
+  "clock": {
+    "format": "{:%I:%M %p}",
+    "format-alt": "{:%A, %d de %B - %I:%M %p}",
+    "tooltip-format": "<span font='monospace'>{calendar}</span>"
+  },
+  "group/center-actions": {
+    "orientation": "inherit",
+    "modules": [
+      "custom/android",
+      "custom/phone",
+      "custom/waybar-theme",
+      "custom/gamemode"
+    ]
+  },
+  "custom/android": {
+    "format": "󰀲",
+    "tooltip-format": "Android app launcher",
+    "on-click": "/root/.local/bin/omarchy-android-menu"
+  },
+  "custom/phone": {
+    "format": "󰄡",
+    "tooltip-format": "Widgets de Omalauncher",
+    "on-click": "/root/.local/bin/omarchy-widgets-menu"
+  },
+  "custom/waybar-theme": {
+    "format": "󰏘",
+    "tooltip-format": "Change the Waybar theme",
+    "on-click": "/root/.local/bin/omarchy-waybar-theme"
+  },
+  "custom/gamemode": {
+    "format": "",
+    "tooltip-format": "Device telemetry and status",
+    "on-click": "/root/.local/bin/omarchy-device-status"
+  },
+  "custom/network": {
+    "exec": "/root/.local/bin/omarchy-waybar-network",
+    "return-type": "json",
+    "interval": 5,
+    "on-click": "omarchy-android-menu"
+  },
+  "pulseaudio": {
+    "format": "{icon}",
+    "format-muted": "",
+    "format-icons": {
+      "default": ["", "", ""]
+    },
+    "scroll-step": 5,
+    "on-click": "pactl set-sink-mute @DEFAULT_SINK@ toggle",
+    "tooltip-format": "Volume: {volume}%\nClick: mute / unmute\nScroll: volume up / down"
+  },
+  "tray": {
+    "icon-size": 14,
+    "spacing": 8
+  },
+  "cpu": {
+    "interval": 5,
+    "format": "󰍛 {usage}%",
+    "on-click": "omarchy-device-status"
+  },
+  "memory": {
+    "format": " {used:0.1f}GB",
+    "interval": 5,
+    "on-click": "omarchy-device-status"
+  },
+  "custom/battery": {
+    "exec": "/root/.local/bin/omarchy-waybar-battery",
+    "return-type": "json",
+    "interval": 10,
+    "on-click": "omarchy-device-status"
+  },
+  "custom/power": {
+    "format": "󰐥",
+    "tooltip-format": "Leave the Sway desktop / power off",
+    "on-click": "omarchy-menu power"
+  },
+  "mpris": {
+    "format": "{player_icon} {artist} - {title}",
+    "format-paused": "{status_icon} <i>{artist} - {title}</i>",
+    "player-icons": {
+      "default": "⏸",
+      "mpv": ""
+    },
+    "status-icons": {
+      "paused": "▶",
+      "playing": "⏸"
+    },
+    "max-length": 35
+  }
+}

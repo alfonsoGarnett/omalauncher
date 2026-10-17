@@ -1,0 +1,23 @@
+#!/bin/bash
+# omarchy-android-storage: copy files between Android's storage (/storage/emulated/0) and Linux
+CMD="${1:-pull-downloads}"
+
+case "$CMD" in
+  pull-downloads)
+    echo "[Storage] Copying Android's downloads to ~/Downloads..."
+    mkdir -p ~/Downloads
+    droid -- pull "/storage/emulated/0/Download/" ~/Downloads/ 2>&1 | tail -5
+    echo "[Storage] Done."
+    ;;
+  push-downloads)
+    echo "[Storage] Sending ~/Downloads to Android..."
+    droid -- push ~/Downloads/* "/storage/emulated/0/Download/" 2>&1 | tail -5
+    echo "[Storage] Done."
+    ;;
+  ls)
+    droid ls -la "/storage/emulated/0/${2:-Download}"
+    ;;
+  *)
+    echo "Usage: omarchy-android-storage [pull-downloads | push-downloads | ls [path]]"
+    ;;
+esac

@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+import subprocess, re, time, sys, os
+
+os.environ.setdefault("ANDROID_SERIAL", "127.0.0.1:5556")
+
+def run_adb(args):
+    try:
+        return subprocess.check_output(["droid", "--"] + args, stderr=subprocess.DEVNULL).decode("utf-8", errors="ignore")
+    except Exception:
+        try:
+            ser = os.environ.get("ANDROID_SERIAL", "127.0.0.1:5556")
+            return subprocess.check_output(["adb", "-s", ser] + args, stderr=subprocess.DEVNULL).decode("utf-8", errors="ignore")
+        except Exception:
+            return ""
+
+def get_dex_display():
+    out = run_adb(["shell", "dumpsys", "display"])
+    # Look for non-zero displays (typically 63 or external display ID)
+    matches = re.findall(r"mDisplayId=([1-9][0-9]*)", out)
+    if matches:
+        return matches[0]
+    m2 = re.findall(r"displayId=([1-9][0-9]*)", out)
+    return m2[0] if m2 else None
+
+def get_linux_windows():
+    out = run_adb(["shell", "dumpsys", "activity", "top"])
+    windows = []
+    current_task = None
+    for line in out.splitlines():
+        m_task = re.search(r"TASK\s+\S+\s+id=(\d+)\s+.*displayId=(\d+)", line)
+        if m_task:
+            current_task = {
+                "id": m_task.group(1),
+                "display": m_task.group(2),
+                "activity": None,
+                "stopped": False,
+                "finished": False
+            }
+        elif current_task:
+            m_act = re.search(r"ACTIVITY\s+(dev\.omalauncher/\.\S+)", line)
+            if m_act:
+                current_task["activity"] = m_act.group(1)
+            if "mFinished=true" in line:
+                current_task["finished"] = True
+            if "mStopped=true" in line:
+                current_task["stopped"] = True
+            if "Local Activity" in line:
+                # Target Linux window activities (TerminalWindow, AgyWindow, LinuxWindowActivity, etc.)
+                if current_task["activity"] and "MainActivity" not in current_task["activity"] and not current_task["finished"]:
+                    windows.append(current_task)
+                current_task = None
+    return windows
+
+def move_windows_to_dex(retries=1):
+    dex_id = get_dex_display()
+    if not dex_id:
+        print("[dex-to-dex] No active Samsung DeX external monitor found.")
+        return False
+
+    for attempt in range(retries):
+        windows = get_linux_windows()
+        if windows:
+            moved_any = False
+            for win in windows:
+                tid = win["id"]
+                disp = win["display"]
+                act = win["activity"]
+                if disp != dex_id:
+                    run_adb(["shell", "cmd", "activity", "display", "move-stack", tid, dex_id])
+                    print(f"[dex-to-dex] Linux window ({act} #{tid}) moved to DeX (display {dex_id}).")
+                    moved_any = True
+            if moved_any:
+                try:
+                    subprocess.run(["dex-scale", "--apply"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+                except Exception:
+                    pass
+            return True
+        if attempt < retries - 1:
+            time.sleep(0.6)
+
+    print("[dex-to-dex] No active Linux windows to move.")
+    return False
+
+if __name__ == '__main__':
+    retries = 1
+    if len(sys.argv) > 1 and sys.argv[1].isdigit():
+        retries = int(sys.argv[1])
+    move_windows_to_dex(retries)

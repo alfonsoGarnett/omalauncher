@@ -1,0 +1,38 @@
+/* Generated dynamically from Omarchy active theme */
+window {
+    margin: 0px;
+    border: 2px solid #7ca5ff;
+    background-color: #1a1b1e;
+    border-radius: 8px;
+    font-family: 'JetBrains Mono', 'Symbols Nerd Font Mono', 'DejaVu Sans Mono', monospace;
+    font-size: 14px;
+}
+#input {
+    margin: 5px;
+    border: 1px solid #505258;
+    color: #eaeaef;
+    background-color: #131417;
+    border-radius: 4px;
+    padding: 6px;
+}
+#inner-box {
+    margin: 5px;
+    background-color: #1a1b1e;
+}
+#outer-box {
+    margin: 5px;
+    background-color: #1a1b1e;
+}
+#entry:selected {
+    background-color: #7ca5ff;
+    color: #131417;
+    font-weight: bold;
+    border-radius: 4px;
+}
+#text {
+    margin: 3px;
+    color: #eaeaef;
+}
+#text:selected {
+    color: #131417;
+}

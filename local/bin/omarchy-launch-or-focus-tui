@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+CMD="${1:-btop}"
+shift || true
+if ! command -v "$CMD" >/dev/null 2>&1; then
+    if [ "$CMD" = "wiremix" ]; then
+        if command -v pulsemixer >/dev/null 2>&1; then
+            CMD="pulsemixer"
+        elif command -v alsamixer >/dev/null 2>&1; then
+            CMD="alsamixer"
+        else
+            CMD="btop"
+        fi
+    fi
+fi
+exec foot -e "$CMD" "$@"

@@ -1,0 +1,15 @@
+#!/bin/bash
+# droid-shade: pull down Android notification shade instantly and reliably
+exec 9>/dev/shm/droid_shade.lock
+flock -n 9 || exit 0
+
+now=$(date +%s%N)
+last=$(cat /dev/shm/droid_shade.time 2>/dev/null || echo 0)
+if (( now - last > 600000000 )); then
+    echo "$now" > /dev/shm/droid_shade.time
+    # Close lock FD before running external commands so background daemons (like adb server) cannot inherit it
+    exec 9>&-
+    timeout 1 adb -s 127.0.0.1:5556 shell cmd statusbar expand-notifications >/dev/null 2>&1 || \
+      timeout 1 adb -s 127.0.0.1:5555 shell cmd statusbar expand-notifications >/dev/null 2>&1 || \
+      droid cmd statusbar expand-notifications >/dev/null 2>&1
+fi

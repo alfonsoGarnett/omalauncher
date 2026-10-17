@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# Starts the Omarchy desktop (Sway) on Samsung DeX, or a single app there
+
+export PATH="$HOME/.local/bin:$PATH"
+if [ -z "$ANDROID_SERIAL" ] || ! adb -s "$ANDROID_SERIAL" get-state >/dev/null 2>&1; then
+  export ANDROID_SERIAL="$(adb devices 2>/dev/null | awk '/\tdevice$/ {print $1; exit}')"
+  export ANDROID_SERIAL="${ANDROID_SERIAL:-127.0.0.1:5556}"
+fi
+export MOZ_ENABLE_WAYLAND=1
+export GDK_BACKEND="wayland,x11"
+export QT_QPA_PLATFORM="wayland;xcb"
+export XCURSOR_THEME="Adwaita"
+export XCURSOR_SIZE="24"
+export WLR_NO_HARDWARE_CURSORS=1
+# Work out and apply the display scale for Samsung DeX
+if command -v dex-scale >/dev/null 2>&1; then
+  eval "$(dex-scale --env 2>/dev/null)"
+  dex-scale --apply >/dev/null 2>&1 || true
+fi
+
+# Set up GPU acceleration (Turnip+Zink or VirGL+ANGLE)
+[ -f /etc/profile.d/omarchy-gpu.sh ] && source /etc/profile.d/omarchy-gpu.sh
+
+# Follow the theme that's active in Omalauncher
+"$HOME/.local/bin/omarchy-sync-theme" >/dev/null 2>&1 || true
+
+# Tune input and isolate keyboard events on Samsung DeX
+"$HOME/.local/bin/dex-fix-keyboard" >/dev/null 2>&1 || true
+
+MODE="${1:-desktop}"
+
+if [ "$MODE" = "x11" ]; then
+  echo "[Omarchy DeX] Starting the i3 tiling desktop on X11 (:0)..."
+  export DISPLAY=:0
+  export PULSE_SERVER=127.0.0.1
+  exec dbus-run-session i3
+elif [ "$MODE" = "terminal" ]; then
+  echo "[Omarchy DeX] Starting a terminal on Wayland..."
+  exec foot -e tmux new-session -A -s omarchy
+else
+  # Full desktop mode (Sway)
+  if pgrep -x sway >/dev/null; then
+    SWAY_OUT=$(swaymsg -r -t get_outputs 2>/dev/null || swaymsg -t get_outputs 2>/dev/null || true)
+    if [ -n "$SWAY_OUT" ] && echo "$SWAY_OUT" | grep -q -E '"name"|Output '; then
+      "$HOME/.local/bin/dex-to-dex" 3 >/dev/null 2>&1 || true
+      exit 0
+    else
+      echo "[Omarchy DeX] Found an orphaned Sway process (no active output). Restarting..."
+      pkill -9 -x sway >/dev/null 2>&1 || true
+      pkill -9 -x swaybg >/dev/null 2>&1 || true
+      sleep 0.5
+    fi
+  fi
+
+  echo "[Omarchy DeX] Starting the full Omarchy desktop (Sway tiling)..."
+
+  # Start D-Bus for Waybar and the desktop services
+  if [ -z "$DBUS_SESSION_BUS_ADDRESS" ]; then
+    eval $(dbus-launch --sh-syntax)
+    export DBUS_SESSION_BUS_ADDRESS
+  fi
+
+  export WLR_BACKENDS=wayland
+  export WLR_RENDERER="${WLR_RENDERER:-pixman}"
+  export XDG_CURRENT_DESKTOP=sway
+  export XDG_SESSION_DESKTOP=sway
+  export XDG_SESSION_TYPE=wayland
+  export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
+  export GDK_BACKEND="wayland,x11"
+  export QT_QPA_PLATFORM="wayland;xcb"
+
+  # Apply the scale as soon as Sway's socket is ready
+  (
+    for i in {1..12}; do
+      sleep 0.5
+      if [ -S "$XDG_RUNTIME_DIR"/sway-ipc.*.sock ] || swaymsg -t get_outputs >/dev/null 2>&1; then
+        dex-scale --apply >/dev/null 2>&1 || true
+        break
+      fi
+    done
+  ) &
+
+  # Move the window to the Samsung DeX monitor as soon as it appears
+  (sleep 1 && "$HOME/.local/bin/dex-to-dex" 8 >/dev/null 2>&1) &
+
+  exec sway --unsupported-gpu
+fi

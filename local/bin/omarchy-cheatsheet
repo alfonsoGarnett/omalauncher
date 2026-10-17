@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""
+omarchy-cheatsheet: a full-window, Tokyo Night styled terminal cheatsheet of the Sway shortcuts on Omarchy DeX.
+Some keys run actions straight from it (change the layout, open the layout menu).
+"""
+
+import os
+import subprocess
+import sys
+import time
+
+# ANSI colors (Tokyo Night)
+RESET = "\033[0m"
+BOLD = "\033[1m"
+DIM = "\033[2m"
+ITALIC = "\033[3m"
+
+BG = "\033[48;2;26;27;38m"
+SURFACE = "\033[48;2;22;22;30m"
+DARK_BG = "\033[48;2;19;20;28m"
+
+ACCENT = "\033[38;2;122;162;247m"   # Tokyo Night blue
+CYAN = "\033[38;2;125;207;255m"     # Bright cyan
+GREEN = "\033[38;2;158;206;106m"   # Neon green
+YELLOW = "\033[38;2;224;175;104m"  # Amber
+RED = "\033[38;2;247;118;142m"     # Red / coral
+MAGENTA = "\033[38;2;187;154;247m" # Purple
+ORANGE = "\033[38;2;255;158;100m"  # Orange
+FG = "\033[38;2;192;202;245m"      # Soft white
+MUTED = "\033[38;2;86;95;137m"     # Blue-grey
+
+def clear():
+    sys.stdout.write("\033[2J\033[H")
+    sys.stdout.flush()
+
+def banner():
+    return f"""
+{ACCENT}{BOLD}  ╔════════════════════════════════════════════════════════════════════════════════════════╗{RESET}
+{ACCENT}{BOLD}  ║  󰞖  OMARCHY DEX // SWAY TILING MANAGER CHEATSHEET & SHORTCUTS GUIDE                  ║{RESET}
+{ACCENT}{BOLD}  ║  {MUTED}Modifier: {CYAN}Ctrl + Alt{MUTED}  ·  Alternative: {CYAN}Control + Mod5{MUTED} (level 3, AltGr)                 {ACCENT}║{RESET}
+{ACCENT}{BOLD}  ╚════════════════════════════════════════════════════════════════════════════════════════╝{RESET}
+"""
+
+def section(title, color=ACCENT):
+    line = "─" * (76 - len(title))
+    return f"\n  {color}{BOLD}▶ {title} {MUTED}{line}{RESET}\n"
+
+def item(shortcut, description, extra=""):
+    sc = f"{YELLOW}{BOLD}{shortcut:<32}{RESET}"
+    desc = f"{FG}{description:<42}{RESET}"
+    ex = f"{MUTED}{extra}{RESET}" if extra else ""
+    return f"    {sc} {desc} {ex}\n"
+
+def draw_cheatsheet():
+    clear()
+    out = []
+    out.append(banner())
+
+    out.append(section("1. AUTOMATIC LAYOUTS", YELLOW))
+    out.append(item("Ctrl + Alt + u", "Master + side stack", "[Big master left, stack right]"))
+    out.append(item("Ctrl + Alt + y", "Smart grid", "[Balances 2x2, 2x3, 3x3 by itself]"))
+    out.append(item("Ctrl + Alt + i", "Vertical columns", "[Side-by-side tiled columns]"))
+    out.append(item("Ctrl + Alt + o", "Horizontal rows", "[Rows stacked top to bottom]"))
+    out.append(item("Ctrl + Alt + p", "Layout menu (Wofi)", "[Pick a layout from a menu]"))
+    out.append(item("Ctrl + Alt + w", "Tabbed", "[Full-size windows with tabs]"))
+    out.append(item("Ctrl + Alt + s", "Stacking", "[Titles stacked vertically]"))
+    out.append(item("Ctrl + Alt + e", "Toggle split", "[Switch between columns and rows]"))
+
+    out.append(section("2. MOVING FOCUS BETWEEN WINDOWS", GREEN))
+    out.append(item("Ctrl + Alt + arrows", "Focus the window in that direction", "[Left/right/up/down]"))
+    out.append(item("Ctrl + Alt + h / j / k / l", "Vim-style focus", "[h=left, j=down, k=up, l=right]"))
+    out.append(item("Ctrl + Alt + Shift + arrows", "Move the active window", "[Moves it to a new spot]"))
+    out.append(item("Ctrl + Alt + Shift + HJKL", "Move the active window (Vim keys)", "[Rearranges the tiling]"))
+    out.append(item("Ctrl + Alt + Space", "Focus floating / tiled", "[Switch focus between the two]"))
+
+    out.append(section("3. WORKSPACES", CYAN))
+    out.append(item("Ctrl + Alt + 1 .. 5", "Go to workspace 1 to 5", "[Virtual desktops]"))
+    out.append(item("Ctrl + Alt + Shift + 1 .. 5", "Send the active window to workspace 1 to 5", "[Without leaving this one]"))
+
+    out.append(section("4. WINDOWS AND POINTER", RED))
+    out.append(item("Ctrl + Alt + m", "Toggle pointer capture", "[Capture or free the cursor]"))
+    out.append(item("Ctrl + Alt + Enter", "New foot terminal", "[Fast Linux terminal]"))
+    out.append(item("Ctrl + Alt + q", "Close the active window", "[Closes it at once]"))
+    out.append(item("Ctrl + Alt + f", "Fullscreen", "[Maximize / restore]"))
+    out.append(item("Ctrl + Alt + Shift + Space", "Toggle floating", "[Make it a free-floating window]"))
+    out.append(item("Ctrl + Alt + d", "App launcher (Wofi)", "[Search installed apps]"))
+
+    out.append(section("5. QUICK SHORTCUTS", MAGENTA))
+    out.append(item("Ctrl + Alt + Shift + n", "Neovim in foot", "[Code editor]"))
+    out.append(item("Ctrl + Alt + Shift + f", "File manager (Thunar)", "[Graphical file manager]"))
+    out.append(item("Ctrl + Alt + Shift + y", "Terminal file manager (Yazi)", "[Fast, written in Rust]"))
+    out.append(item("Ctrl + Alt + Shift + s", "Snipping tool", "[Full screen or a region]"))
+    out.append(item("Ctrl + Alt + Shift + a", "Android apps menu", "[Open phone apps on DeX]"))
+    out.append(item("Ctrl + Alt + Shift + w", "Widgets & telemetry menu", "[Widgets, mouse and battery]"))
+    out.append(item("Ctrl + Alt + Shift + c", "Reload Sway's config", "[Apply config changes live]"))
+
+    out.append(section("6. SPANISH CHARACTERS (RIGHT SHIFT)", ORANGE))
+    out.append(item("Right Shift + a / e / i / o / u", "Accented vowels, lowercase", "[á, é, í, ó, ú]"))
+    out.append(item("Left Shift + Right Shift + vowel", "Accented vowels, uppercase", "[Á, É, Í, Ó, Ú]"))
+    out.append(item("Right Shift + n  /  + Left Shift", "Eñe, lowercase and uppercase", "[ñ / Ñ]"))
+    out.append(item("Right Shift + 1", "Inverted exclamation mark", "[¡]"))
+    out.append(item("Right Shift + /", "Inverted question mark", "[¿]"))
+    out.append(item("Right Shift + w", "U with diaeresis", "[ü / Ü]"))
+
+    out.append(f"\n{ACCENT}  ────────────────────────────────────────────────────────────────────────────{RESET}\n")
+    out.append(f"  {BOLD}Quick actions:{RESET} press {YELLOW}[m]{RESET} for master, {YELLOW}[g]{RESET} for grid, {YELLOW}[p]{RESET} for the layout menu, {YELLOW}[r]{RESET} to redraw, or {RED}[q]{RESET} to quit.\n\n")
+
+    sys.stdout.write("".join(out))
+    sys.stdout.flush()
+
+def main():
+    import tty, termios
+    draw_cheatsheet()
+
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        while True:
+            ch = sys.stdin.read(1)
+            if ch in ('q', 'Q', '\x1b', '\x03'):  # q, Esc or Ctrl+C
+                break
+            elif ch in ('g', 'G'):
+                subprocess.run(["/root/.local/bin/omarchy-layout", "grid"])
+                draw_cheatsheet()
+            elif ch in ('m', 'M'):
+                subprocess.run(["/root/.local/bin/omarchy-layout", "master"])
+                draw_cheatsheet()
+            elif ch in ('p', 'P'):
+                subprocess.Popen(["/root/.local/bin/omarchy-layout", "menu"])
+            elif ch in ('r', 'R'):
+                draw_cheatsheet()
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        clear()
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,2 @@
+#!/bin/sh
+GALLIUM_DRIVER=zink LIBGL_KOPPER_DRI2=true DISPLAY="${DISPLAY:-:0}" exec "$@"

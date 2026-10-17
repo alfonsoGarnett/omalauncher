@@ -1,0 +1,1185 @@
+#!/usr/bin/env python3
+"""adb-admin: privileged Android controls over ADB (shell user, no root).
+
+Used by ~/.config/omalauncher/widgets/36-adb-admin.owl. Reports go to
+~/.cache/adb-admin/*.json (read by the widget's file sources); every change
+is logged to ~/.local/share/adb-admin/log.jsonl with the command that undoes it.
+
+  adb-admin status                      connection + quick toggles (JSON on stdout)
+  adb-admin apps                        refresh apps.json
+  adb-admin do ACTION PKG...            freeze unfreeze suspend unsuspend remove restore
+                                        stop clear cache  (PKGs may be one space-joined word)
+  adb-admin undo                        undo the last batch
+  adb-admin app PKG                     details -> app.json
+  adb-admin grant|revoke PKG PERM
+  adb-admin appop PKG OP MODE           allow ignore deny foreground default
+  adb-admin bucket PKG BUCKET           active working_set frequent rare restricted
+  adb-admin idle PKG on|off             doze whitelist
+  adb-admin preset NAME                 debloat preset (writes presets.json)
+  adb-admin report KIND                 audit battery memory cpu storage crash anr apks log startup
+  adb-admin restrict|unrestrict PKG...  background running (RUN_ANY_IN_BACKGROUND), one undoable batch
+  adb-admin set NS KEY VALUE|null       settings put/delete, with undo
+  adb-admin dns off|auto|HOST
+  adb-admin anim SCALE
+  adb-admin density N|reset
+  adb-admin toggle wifi|bt|data|airplane on|off
+  adb-admin default ROLE PKG            browser dialer sms home assistant
+  adb-admin killall | shot | record SECS | reboot system|recovery|bootloader
+  adb-admin install PATH | extract PKG | export NAME | import NAME | grantwss
+"""
+import json, os, re, subprocess, sys, time, glob
+
+SERIAL = os.environ.get("ADB_SERIAL", "127.0.0.1:5556")
+HOME = os.path.expanduser("~")
+CACHE = os.path.join(HOME, ".cache/adb-admin")
+DATA = os.path.join(HOME, ".local/share/adb-admin")
+LOG = os.path.join(DATA, "log.jsonl")
+LAUNCHER = "dev.omalauncher.mod"
+PKG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._]*$")
+KEY_RE = re.compile(r"^[A-Za-z0-9_.]+$")
+os.makedirs(CACHE, exist_ok=True)
+os.makedirs(DATA, exist_ok=True)
+
+# Removing or freezing these can bootloop the phone or cut this widget off.
+PROTECTED = {
+    "android", LAUNCHER, "com.android.systemui", "com.android.settings", "com.android.phone",
+    "com.android.shell", "com.android.providers.settings", "com.android.providers.telephony",
+    "com.android.providers.media", "com.google.android.providers.media.module",
+    "com.android.server.telecom", "com.google.android.permissioncontroller",
+    "com.google.android.packageinstaller", "com.android.externalstorage",
+    "com.google.android.gms", "com.google.android.gsf", "com.android.vending",
+    "com.google.android.webview", "com.google.android.networkstack", "com.android.bluetooth",
+    "com.android.nfc", "com.samsung.android.providers.contacts", "com.sec.android.app.launcher",
+    "com.sec.imsservice", "com.sec.epdg", "com.android.keychain", "com.android.location.fused",
+    "com.samsung.android.biometrics.app.setting", "com.samsung.android.knox.containercore",
+    "com.android.intentresolver", "com.google.android.ext.services", "com.android.se",
+    "com.samsung.android.incallui", "com.samsung.android.dialer", "com.termux",
+}
+
+NAMES = {
+    "com.samsung.android.bixby.agent": "Bixby Voice", "com.samsung.android.bixby.wakeup": "Bixby wake-up",
+    "com.samsung.android.app.spage": "Samsung Free", "com.samsung.android.game.gamehome": "Game Launcher",
+    "com.samsung.android.game.gametools": "Game Booster", "com.samsung.android.game.gos": "Game Optimizing Service",
+    "com.samsung.android.aremoji": "AR Emoji", "com.samsung.android.aremojieditor": "AR Emoji Editor",
+    "com.samsung.android.app.camera.sticker.facearavatar.preload": "AR Emoji stickers",
+    "com.samsung.android.app.dressroom": "Wallpaper dressroom", "com.samsung.android.app.tips": "Tips",
+    "com.samsung.android.stickercenter": "Sticker Center", "com.samsung.android.kidsinstaller": "Samsung Kids installer",
+    "com.sec.penup": "PENUP", "com.sec.android.app.vepreload": "Video editor preload", "com.sec.android.app.ve.vebgm": "Video editor music",
+    "com.samsung.android.forest": "Digital Wellbeing", "com.samsung.android.app.parentalcare": "Parental controls",
+    "com.samsung.android.drivingplus": "Driving mode", "com.samsung.android.mapsagent": "Maps agent",
+    "com.samsung.android.visionintelligence": "Bixby Vision", "com.samsung.android.smartsuggestions": "Smart suggestions",
+    "com.samsung.android.voc": "Samsung Members", "com.samsung.android.app.find": "Galaxy Find",
+    "com.samsung.android.service.peoplestripe": "People edge", "com.samsung.android.app.taskedge": "Tasks edge",
+    "com.samsung.android.app.clipboardedge": "Clipboard edge", "com.sec.android.app.billing": "Samsung Checkout",
+    "com.sec.android.app.samsungapps": "Galaxy Store", "com.sec.android.diagmonagent": "Diagnostics agent",
+    "com.samsung.android.dqagent": "Device quality agent", "com.samsung.android.rubin.app": "Customization Service",
+    "com.sec.android.app.chromecustomizations": "Chrome customizations", "com.samsung.android.svcagent": "SVC agent",
+    "com.samsung.android.beaconmanager": "Beacon manager", "com.sec.android.easyMover": "Smart Switch",
+    "com.sec.android.easyMover.Agent": "Smart Switch agent", "com.samsung.android.smartswitchassistant": "Smart Switch assistant",
+    "com.samsung.android.widget.pictureframe": "Picture frame widget", "com.samsung.storyservice": "Story service",
+    "com.samsung.android.app.readingglass": "Magnifier (reading)", "com.samsung.android.themestore": "Galaxy Themes",
+    "com.samsung.android.app.sharelive": "Quick Share", "com.samsung.android.smartmirroring": "Smart View",
+    "com.samsung.android.app.reminder": "Reminder", "com.samsung.android.app.watchmanagerstub": "Wearable stub",
+    "com.samsung.android.mobileservice": "Samsung social", "com.samsung.android.knox.analytics.uploader": "Knox analytics",
+    "com.facebook.appmanager": "Facebook App Manager", "com.facebook.services": "Facebook Services",
+    "com.facebook.system": "Facebook App Installer", "com.microsoft.appmanager": "Link to Windows",
+    "com.microsoft.skydrive": "OneDrive", "com.google.android.apps.tachyon": "Google Meet",
+    "com.google.android.youtube": "YouTube", "com.google.android.apps.docs": "Google Drive",
+    "com.google.android.apps.docs.editors.docs": "Google Docs", "com.google.android.apps.docs.editors.sheets": "Google Sheets",
+    "com.google.android.googlequicksearchbox": "Google app", "com.google.android.feedback": "Google feedback",
+    "com.google.android.apps.restore": "Google restore", "com.google.android.partnersetup": "Partner setup",
+    "com.google.android.gms.location.history": "Location history", "com.google.android.apps.turbo": "Device Health Services",
+    "com.google.android.apps.aiwallpapers": "AI wallpapers", "com.google.android.apps.chromecast.app": "Google Home",
+    "com.google.ar.core": "ARCore", "com.google.android.projection.gearhead": "Android Auto",
+    "com.google.android.marvin.talkback": "TalkBack", "com.google.android.apps.accessibility.voiceaccess": "Voice Access",
+    "com.google.audio.hearing.visualization.accessibility.scribe": "Live Transcribe", "com.google.android.glasses.core": "Glasses core",
+    "com.google.ambient.streaming": "Ambient streaming", "com.android.chrome": "Chrome",
+    "com.google.android.apps.walletnfcrel": "Google Wallet", "com.google.android.apps.messaging": "Google Messages",
+    "com.google.android.apps.bard": "Gemini", "com.google.android.apps.labs.language.tailwind": "NotebookLM",
+    "com.google.android.apps.labs.whisk": "Whisk", "com.wssyncmldm": "Software update (OTA)",
+    "com.wsomacp": "OMA client provisioning", "com.samsung.android.app.omcagent": "OMC agent (carrier config)",
+    "com.hiya.star": "Hiya caller ID", "com.sec.android.app.parser": "Dialer codes parser",
+    "com.globalhitss.claro.pay": "Claro Pay", "com.movistarmx.mx.app": "Mi Movistar",
+    "com.amazon.mShop.android.shopping": "Amazon Shopping", "com.android.vending": "Play Store",
+    "com.google.android.gms": "Play services", "com.whatsapp": "WhatsApp", "com.sec.android.app.camera": "Camera",
+    "com.sec.android.gallery3d": "Gallery", "com.samsung.android.dialer": "Phone", "com.samsung.android.app.contacts": "Contacts",
+    "com.samsung.android.calendar": "Calendar", "com.sec.android.app.myfiles": "My Files", "com.samsung.android.app.notes": "Samsung Notes",
+    "com.sec.android.app.clockpackage": "Clock", "com.samsung.android.honeyboard": "Samsung Keyboard",
+    "com.android.systemui": "System UI", "com.android.settings": "Settings", LAUNCHER: "omalauncher",
+    "com.sec.android.app.launcher": "One UI Home", "com.samsung.android.app.routines": "Modes & Routines",
+    "com.samsung.android.lool": "Device care", "com.samsung.android.scloud": "Samsung Cloud",
+    "com.samsung.android.spayfw": "Samsung Wallet fw", "com.samsung.android.samsungpass": "Samsung Pass",
+    "com.samsung.android.fmm": "Find My Mobile", "com.samsung.android.goodlock": "Good Lock",
+    "com.samsung.knox.securefolder": "Secure Folder", "com.sec.android.app.shealth": "Samsung Health",
+    "com.samsung.android.app.interpreter": "Interpreter", "com.samsung.android.app.galaxyraw": "Expert RAW",
+    "com.samsung.android.da.daagent": "Dual Messenger", "com.samsung.android.kgclient": "Knox Guard",
+    "com.sec.android.app.voicenote": "Voice Recorder", "com.sec.android.app.popupcalculator": "Calculator",
+    "com.samsung.android.video": "Samsung Video", "com.sec.android.app.magnifier": "Magnifier",
+    "com.samsung.android.app.watchmanager": "Galaxy Wearable", "com.samsung.android.privacydashboard": "Privacy dashboard",
+}
+
+# preset -> [(pkg or prefix*, risk, note)]
+PRESETS = {
+    "samsung": [
+        ("com.samsung.android.bixby.agent", "safe", "voice assistant"),
+        ("com.samsung.android.bixby.wakeup", "safe", "'Hi Bixby' detection"),
+        ("com.samsung.android.visionintelligence", "safe", "camera lens search"),
+        ("com.samsung.android.app.spage", "safe", "left-screen feed"),
+        ("com.samsung.android.game.gamehome", "safe", "game hub"),
+        ("com.samsung.android.game.gametools", "caution", "in-game overlay"),
+        ("com.samsung.android.aremoji", "safe", ""), ("com.samsung.android.aremojieditor", "safe", ""),
+        ("com.samsung.android.app.camera.sticker.facearavatar.preload", "safe", ""),
+        ("com.samsung.android.app.dressroom", "safe", ""), ("com.samsung.android.app.tips", "safe", ""),
+        ("com.samsung.android.stickercenter", "safe", ""), ("com.samsung.android.kidsinstaller", "safe", ""),
+        ("com.sec.penup", "safe", ""), ("com.sec.android.app.vepreload", "safe", ""), ("com.sec.android.app.ve.vebgm", "safe", ""),
+        ("com.samsung.android.app.parentalcare", "safe", ""), ("com.samsung.android.drivingplus", "safe", ""),
+        ("com.samsung.android.mapsagent", "safe", ""), ("com.samsung.android.smartsuggestions", "caution", "app suggestions"),
+        ("com.samsung.android.voc", "safe", "feedback & community"),
+        ("com.samsung.android.service.peoplestripe", "safe", ""), ("com.samsung.android.app.taskedge", "safe", ""),
+        ("com.sec.android.app.billing", "safe", ""), ("com.sec.android.diagmonagent", "safe", "telemetry"),
+        ("com.samsung.android.dqagent", "safe", "telemetry"), ("com.samsung.android.rubin.app", "safe", "profiling"),
+        ("com.samsung.android.knox.analytics.uploader", "safe", "telemetry"),
+        ("com.sec.android.app.chromecustomizations", "safe", ""), ("com.samsung.android.beaconmanager", "safe", ""),
+        ("com.sec.android.easyMover", "safe", "only needed to migrate phones"), ("com.sec.android.easyMover.Agent", "safe", ""),
+        ("com.samsung.android.smartswitchassistant", "safe", ""), ("com.samsung.android.widget.pictureframe", "safe", ""),
+        ("com.samsung.storyservice", "safe", "gallery stories"), ("com.samsung.android.app.readingglass", "safe", ""),
+        ("com.samsung.android.forest", "caution", "screen-time stats"),
+        ("com.samsung.android.themestore", "caution", "breaks theme changes"),
+        ("com.sec.android.app.samsungapps", "caution", "updates Samsung apps"),
+        ("com.samsung.android.app.find", "caution", "searches the phone"),
+        ("com.samsung.android.mobileservice", "caution", "shared albums/calendars"),
+    ],
+    "facebook": [
+        ("com.facebook.appmanager", "safe", "preinstalled updater"), ("com.facebook.services", "safe", "preinstalled"),
+        ("com.facebook.system", "safe", "preinstalled installer"),
+    ],
+    "google": [
+        ("com.google.android.apps.tachyon", "safe", ""), ("com.google.android.feedback", "safe", ""),
+        ("com.google.android.apps.restore", "safe", "only at setup"), ("com.google.android.partnersetup", "safe", ""),
+        ("com.google.android.gms.location.history", "safe", ""), ("com.google.android.apps.aiwallpapers", "safe", ""),
+        ("com.google.android.glasses.core", "safe", ""), ("com.google.ambient.streaming", "safe", ""),
+        ("com.google.android.apps.labs.whisk", "safe", ""), ("com.google.android.apps.docs.editors.docs", "safe", ""),
+        ("com.google.android.apps.docs.editors.sheets", "safe", ""),
+        ("com.google.android.marvin.talkback", "caution", "accessibility"),
+        ("com.google.android.apps.accessibility.voiceaccess", "caution", "accessibility"),
+        ("com.google.audio.hearing.visualization.accessibility.scribe", "caution", "accessibility"),
+        ("com.google.android.youtube", "caution", ""), ("com.google.android.apps.docs", "caution", "Drive"),
+        ("com.google.ar.core", "caution", "AR apps need it"), ("com.google.android.apps.turbo", "caution", "adaptive battery"),
+        ("com.google.android.projection.gearhead", "caution", "car"),
+        ("com.android.chrome", "caution", "Firefox is your browser"),
+        ("com.google.android.googlequicksearchbox", "danger", "Google search/assistant, Circle to Search"),
+    ],
+    "carrier": [
+        ("com.hiya.star", "safe", "caller ID"), ("com.globalhitss.claro.pay", "safe", ""),
+        ("com.movistarmx.mx.app", "safe", ""), ("com.microsoft.appmanager", "caution", "Link to Windows"),
+        ("com.microsoft.skydrive", "caution", ""), ("com.amazon.mShop.android.shopping", "safe", ""),
+        ("com.wsomacp", "caution", "carrier provisioning"),
+        ("com.samsung.android.app.omcagent", "caution", "carrier config updates"),
+        ("com.wssyncmldm", "danger", "firmware updates (OTA) stop"),
+    ],
+    "languages": [
+        ("com.samsung.SMT.lang_*", "lang", "text-to-speech voice"),
+        ("com.samsung.android.bixby.ondevice.*", "lang", "on-device speech"),
+        ("com.samsung.android.nmt.apps.t2t.languagepack.*", "lang", "translation pack"),
+    ],
+}
+PRESET_TITLES = {"samsung": "Samsung bloat", "facebook": "Facebook stubs", "google": "Google extras",
+                 "carrier": "Carrier, Microsoft, Amazon & OTA", "languages": "Unused language packs"}
+KEEP_LANGS = ("es", "en")
+
+DANGEROUS = ["CAMERA", "RECORD_AUDIO", "ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION", "ACCESS_BACKGROUND_LOCATION",
+             "READ_CONTACTS", "WRITE_CONTACTS", "GET_ACCOUNTS", "READ_CALENDAR", "WRITE_CALENDAR", "READ_SMS", "SEND_SMS",
+             "RECEIVE_SMS", "READ_CALL_LOG", "WRITE_CALL_LOG", "CALL_PHONE", "READ_PHONE_STATE", "READ_PHONE_NUMBERS",
+             "ANSWER_PHONE_CALLS", "BODY_SENSORS", "ACTIVITY_RECOGNITION", "READ_MEDIA_IMAGES", "READ_MEDIA_VIDEO",
+             "READ_MEDIA_AUDIO", "READ_EXTERNAL_STORAGE", "WRITE_EXTERNAL_STORAGE", "ACCESS_MEDIA_LOCATION",
+             "BLUETOOTH_SCAN", "BLUETOOTH_CONNECT", "NEARBY_WIFI_DEVICES", "POST_NOTIFICATIONS", "UWB_RANGING"]
+APP_OPS = ["RUN_IN_BACKGROUND", "RUN_ANY_IN_BACKGROUND", "SYSTEM_ALERT_WINDOW", "REQUEST_INSTALL_PACKAGES",
+           "GET_USAGE_STATS", "MANAGE_EXTERNAL_STORAGE", "WAKE_LOCK", "READ_CLIPBOARD", "SCHEDULE_EXACT_ALARM"]
+AUDIT_OPS = [("CAMERA", "Camera"), ("RECORD_AUDIO", "Microphone"), ("FINE_LOCATION", "Precise location"),
+             ("READ_SMS", "SMS"), ("READ_CONTACTS", "Contacts"), ("READ_CALL_LOG", "Call log"),
+             ("SYSTEM_ALERT_WINDOW", "Draw over apps"), ("REQUEST_INSTALL_PACKAGES", "Install apps"),
+             ("GET_USAGE_STATS", "Usage access"), ("MANAGE_EXTERNAL_STORAGE", "All files access")]
+
+
+def out(x):
+    print(x if isinstance(x, str) else json.dumps(x, separators=(",", ":")))
+
+
+def die(msg):
+    print(msg)
+    sys.exit(1)
+
+
+def adb(*args, timeout=30, check=False):
+    try:
+        r = subprocess.run(["adb", "-s", SERIAL, *args], capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return 124, "", "timeout"
+    if check and r.returncode != 0:
+        die((r.stderr or r.stdout).strip().splitlines()[-1] if (r.stderr or r.stdout).strip() else "adb failed")
+    return r.returncode, r.stdout, r.stderr
+
+
+def sh(cmd, timeout=30):
+    """Run a shell command on the phone; returns stdout (stderr folded in)."""
+    code, o, e = adb("shell", cmd, timeout=timeout)
+    return (o + e).strip()
+
+
+def connected():
+    try:
+        r = subprocess.run(["adb", "devices"], capture_output=True, text=True, timeout=5)
+    except Exception:
+        return False
+    for line in r.stdout.splitlines()[1:]:
+        p = line.split()
+        if len(p) >= 2 and p[0] == SERIAL and p[1] == "device":
+            return True
+    subprocess.run(["adb", "connect", SERIAL], capture_output=True, timeout=5)
+    r = subprocess.run(["adb", "devices"], capture_output=True, text=True, timeout=5)
+    return any(l.split()[:2] == [SERIAL, "device"] for l in r.stdout.splitlines()[1:])
+
+
+def need():
+    if not connected():
+        die(f"ADB not connected to {SERIAL}: enable Wireless debugging, then use the droid widget")
+
+
+def write(name, obj):
+    path = os.path.join(CACHE, name)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(obj, f, separators=(",", ":"))
+    os.replace(tmp, path)
+
+
+def read(name, default=None):
+    try:
+        with open(os.path.join(CACHE, name)) as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def pkgs_of(args):
+    ps = []
+    for a in args:
+        ps += a.split()
+    bad = [p for p in ps if not PKG_RE.match(p)]
+    if bad:
+        die("bad package name: " + bad[0])
+    return list(dict.fromkeys(ps))
+
+
+GENERIC = {"android", "app", "apps", "mobile", "client", "production", "droid", "flutter", "downloaders", "manager",
+           "wallet", "passenger", "thirdpartyclient", "shopping", "standard", "mx", "mexico", "one", "service", "services"}
+NICK = {"com.facebook.katana": "Facebook", "com.facebook.orca": "Messenger", "com.tailscale.ipn": "Tailscale",
+        "com.twitter.android": "X (Twitter)", "com.didiglobal.passenger": "DiDi", "com.nu.production": "Nu",
+        "com.ubercab": "Uber", "com.ubercab.eats": "Uber Eats", "com.alibaba.aliexpresshd": "AliExpress",
+        "com.amazon.avod.thirdpartyclient": "Prime Video", "com.mercadopago.wallet": "Mercado Pago",
+        "app.revanced.manager.flutter": "ReVanced Manager", "com.google.android.gm": "Gmail",
+        "com.google.android.apps.maps": "Google Maps", "com.google.android.apps.photos": "Google Photos",
+        "com.google.android.inputmethod.latin": "Gboard", "com.touchtype.swiftkey": "SwiftKey",
+        "org.mozilla.firefox": "Firefox", "com.spotify.music": "Spotify", "com.netflix.mediaclient": "Netflix",
+        "com.openai.chatgpt": "ChatGPT", "com.anthropic.claude": "Claude", "com.discord": "Discord",
+        "org.telegram.messenger": "Telegram", "com.myinsta.android": "Instagram (mod)", "com.wbd.stream": "Max"}
+
+
+def name_of(p):
+    if p in NAMES:
+        return NAMES[p]
+    if p in NICK:
+        return NICK[p]
+    seg = p.split(".")
+    seg = seg[1:] if len(seg) > 1 else seg
+    seg = [x for x in seg if x.lower() not in GENERIC] or seg
+    n = seg[-1]
+    if len(n) <= 3 and len(seg) > 1:
+        n = seg[-2] + " " + n
+    n = re.sub(r"([a-z])([A-Z])", r"\1 \2", n).replace("_", " ")
+    return n[:1].upper() + n[1:]
+
+
+def ime_pkg():
+    v = sh("settings get secure default_input_method")
+    return v.split("/")[0] if "/" in v else ""
+
+
+def protected():
+    s = set(PROTECTED)
+    ime = ime_pkg()
+    if ime:
+        s.add(ime)
+    home = sh("cmd role get-role-holders android.app.role.HOME").strip()
+    if home and PKG_RE.match(home):
+        s.add(home)
+    return s
+
+
+# ---------- log / undo ----------
+
+def log(batch, label, pkg, undo_cmds):
+    with open(LOG, "a") as f:
+        f.write(json.dumps({"b": batch, "t": int(time.time()), "label": label, "pkg": pkg, "undo": undo_cmds}) + "\n")
+
+
+def log_entries():
+    try:
+        with open(LOG) as f:
+            return [json.loads(l) for l in f if l.strip()]
+    except FileNotFoundError:
+        return []
+
+
+def write_log_report():
+    es = log_entries()
+    batches = {}
+    for e in es:
+        b = batches.setdefault(e["b"], {"b": e["b"], "t": e["t"], "label": e["label"], "pkgs": [], "undone": False})
+        if e.get("pkg"):
+            b["pkgs"].append(e["pkg"])
+        if e.get("undone"):
+            b["undone"] = True
+    items = sorted(batches.values(), key=lambda b: -b["b"])[:60]
+    for it in items:
+        it["n"] = len(it["pkgs"])
+        who = name_of(it["pkgs"][0]) if it["n"] == 1 else f"{it['n']} apps" if it["n"] else ""
+        it["label"] = it["label"].replace("({n})", "").replace("{n}", who).strip() if "{n}" in it["label"] else (it["label"] + " " + who).strip()
+        it["pkgs"] = it["pkgs"][:6]
+    write("log.json", {"t": int(time.time()), "items": items, "undoable": sum(1 for i in items if not i["undone"])})
+
+
+def new_batch():
+    return int(time.time() * 1000)
+
+
+# ---------- apps ----------
+
+def list_set(flags):
+    o = sh(f"pm list packages --user 0 {flags}")
+    return {l[8:].strip() for l in o.splitlines() if l.startswith("package:")}
+
+
+def refresh_apps():
+    allp = list_set("-u")
+    installed = list_set("")
+    system = list_set("-s -u")
+    disabled = list_set("-d")
+    o = sh("dumpsys package packages | grep -E '^  Package \\[|^    User 0:'", timeout=60)
+    suspended, cur = set(), None
+    for l in o.splitlines():
+        m = re.match(r"\s+Package \[(.+?)\]", l)
+        if m:
+            cur = m.group(1)
+        elif cur and "suspended=true" in l:
+            suspended.add(cur)
+    prot = protected()
+    apps = []
+    for p in sorted(allp):
+        st = "removed" if p not in installed else "suspended" if p in suspended else "frozen" if p in disabled else "on"
+        apps.append({"p": p, "n": name_of(p), "s": p in system, "st": st, "x": p in prot})
+    counts = {"total": len(apps), "sys": len(system & installed), "user": len(installed - system),
+              "frozen": sum(a["st"] == "frozen" for a in apps), "suspended": len(suspended & installed),
+              "removed": sum(a["st"] == "removed" for a in apps)}
+    write("apps.json", {"t": int(time.time()), "counts": counts, "apps": apps})
+    return apps
+
+
+ACTIONS = {
+    # action: (shell template, undo template, label, allowed on protected)
+    "freeze": ("pm disable-user --user 0 {p}", "pm enable --user 0 {p}", "Froze", False),
+    "unfreeze": ("pm enable --user 0 {p}", "pm disable-user --user 0 {p}", "Unfroze", True),
+    "suspend": ("pm suspend --user 0 {p}", "pm unsuspend --user 0 {p}", "Suspended", False),
+    "unsuspend": ("pm unsuspend --user 0 {p}", "pm suspend --user 0 {p}", "Unsuspended", True),
+    "remove": ("pm uninstall -k --user 0 {p}", None, "Removed", False),
+    "restore": ("cmd package install-existing --user 0 {p}", "pm disable-user --user 0 {p}", "Restored", True),
+    "stop": ("am force-stop --user 0 {p}", None, "Force-stopped", False),
+    "cache": ("pm clear --user 0 --cache-only {p}", None, "Cleared cache of", True),
+    "clear": ("pm clear --user 0 {p}", None, "Cleared data of", False),
+}
+OK_WORDS = ("Success", "new state", "suspended state", "installed for user", "")
+
+
+BACKUP = os.path.join(DATA, "apks")
+
+
+def backup_apks(p):
+    """Pull a user app's APKs (base + splits) so removing it can be undone. Returns the files or None."""
+    paths = [l[8:].strip() for l in sh(f"pm path --user 0 {p}").splitlines() if l.startswith("package:")]
+    if not paths:
+        return None
+    d = os.path.join(BACKUP, p)
+    os.makedirs(d, exist_ok=True)
+    for f in glob.glob(d + "/*.apk"):
+        os.remove(f)
+    for x in paths:
+        code, o, e = adb("pull", x, d, timeout=300)
+        if code != 0:
+            return None
+    files = sorted(glob.glob(d + "/*.apk"))
+    return files if len(files) == len(paths) else None
+
+
+def reinstall(p):
+    files = sorted(glob.glob(os.path.join(BACKUP, p, "*.apk")))
+    if not files:
+        return False
+    code, o, e = adb("install-multiple", "-r", "--user", "0", *files, timeout=300) if len(files) > 1 else \
+        adb("install", "-r", "--user", "0", files[0], timeout=300)
+    return code == 0 and "Success" in o + e
+
+
+def run_undo(c):
+    if c.startswith("host:reinstall "):
+        return reinstall(c.split()[1])
+    sh(c)
+    return True
+
+
+def do(action, ps):
+    if action not in ACTIONS:
+        die("unknown action " + action)
+    need()
+    tmpl, undo, label, prot_ok = ACTIONS[action]
+    prot = protected() if not prot_ok else set()
+    system = list_set("-s -u") if action in ("remove", "restore") else set()
+    batch, done, failed, skipped, froze, store = new_batch(), [], [], [], [], []
+    for p in ps:
+        if p in prot:
+            skipped.append(p)
+            continue
+        cmd, und = tmpl.format(p=p), undo.format(p=p) if undo else None
+        if action == "remove" and p in system:
+            # Android 17 refuses per-user removal of system apps without root: freeze them instead.
+            cmd, und = f"pm disable-user --user 0 {p}", f"pm enable --user 0 {p}"
+            froze.append(p)
+        elif action == "remove":
+            if not backup_apks(p):
+                failed.append(f"{p}: couldn't back up its APK, not removed")
+                continue
+            und = f"host:reinstall {p}"
+        elif action == "restore" and p not in system:
+            if reinstall(p):
+                done.append(p)
+                log(batch, f"{label} {{n}}", p, [f"pm uninstall -k --user 0 {p}"])
+            else:
+                sh(f"am start -a android.intent.action.VIEW -d market://details?id={p}")
+                store.append(p)
+            continue
+        r = sh(cmd)
+        low = r.lower()
+        if "exception" in low or "error" in low or "failure" in low or "unknown package" in low or "not installed" in low:
+            failed.append(f"{p}: {r.splitlines()[-1][:80]}")
+            if p in froze:
+                froze.remove(p)
+            continue
+        done.append(p)
+        if und:
+            log(batch, f"{label} {{n}}", p, [und])
+    if done and undo is None and action != "remove":
+        log(batch, f"{label} {{n}}", None, [])
+    refresh_apps()
+    write_log_report()
+    removed = len(done) - len(froze)
+    msg = f"{label} {removed} app{'s' if removed != 1 else ''}"
+    if froze:
+        msg += f"; froze {len(froze)} system app{'s' if len(froze) != 1 else ''} (removing them needs root on Android 17)"
+    if store:
+        msg += f"; no backup for {len(store)}, opened Play Store"
+    if skipped:
+        msg += f"; skipped {len(skipped)} protected"
+    if failed:
+        msg += f"; {len(failed)} failed ({failed[0]})"
+    out(msg)
+
+
+def undo_last():
+    need()
+    es = log_entries()
+    live = [e for e in es if not e.get("undone") and e.get("undo")]
+    if not live:
+        die("nothing to undo")
+    b = max(e["b"] for e in live)
+    n = 0
+    for e in reversed(es):
+        if e["b"] == b and not e.get("undone"):
+            for c in e.get("undo", []):
+                run_undo(c)
+            e["undone"] = True
+            n += 1
+    with open(LOG, "w") as f:
+        for e in es:
+            f.write(json.dumps(e) + "\n")
+    refresh_apps()
+    write_log_report()
+    if os.path.exists(os.path.join(CACHE, "startup.json")):
+        startup_report()
+    label = next(e["label"] for e in es if e["b"] == b).replace("{n}", "").strip()
+    out(f"Undid: {label} ({n})")
+
+
+# ---------- app details ----------
+
+def app_detail(p):
+    need()
+    if not PKG_RE.match(p):
+        die("bad package")
+    d = sh(f"dumpsys package {p}", timeout=30)
+    g = lambda k: (re.search(rf"{k}=(\S+)", d) or [None, None])[1]
+    lu = re.search(r"lastUpdateTime=(.+)", d)
+    fi = re.search(r"firstInstallTime=(.+)", d)
+    # runtime permissions of user 0
+    perms = {}
+    u0 = re.split(r"\n    User 0:", d, maxsplit=1)
+    blk = u0[1] if len(u0) > 1 else d
+    blk = re.split(r"\n    User \d+:", blk, maxsplit=1)[0]
+    for m in re.finditer(r"android\.permission\.([A-Z_]+): granted=(true|false)", blk):
+        if m.group(1) in DANGEROUS:
+            perms[m.group(1)] = m.group(2) == "true"
+    ops_raw = sh(f"appops get --user 0 {p}")
+    ops = {}
+    for l in ops_raw.splitlines():
+        m = re.match(r"(?:Uid mode: )?([A-Z_]+): (\w+)", l.strip())
+        if m and m.group(1) in APP_OPS and m.group(1) not in ops:
+            ops[m.group(1)] = m.group(2)
+    for op in APP_OPS:
+        ops.setdefault(op, "default")
+    bucket = sh(f"am get-standby-bucket --user 0 {p}").strip()
+    bmap = {"5": "exempted", "10": "active", "20": "working_set", "30": "frequent", "40": "rare", "45": "restricted", "50": "never"}
+    wl = sh("dumpsys deviceidle whitelist")
+    apps = read("apps.json", {}).get("apps", [])
+    me = next((a for a in apps if a["p"] == p), {})
+    procs = sh(f"pidof {p}").strip()
+    write("app.json", {
+        "p": p, "n": name_of(p), "st": me.get("st"), "s": me.get("s"), "x": me.get("x"),
+        "version": g("versionName"), "sdk": g("targetSdk"), "installer": g("installerPackageName"),
+        "updated": lu.group(1).strip() if lu else None, "installed": fi.group(1).strip() if fi else None,
+        "perms": [{"k": k, "on": v} for k, v in sorted(perms.items())],
+        "ops": [{"k": k, "v": ops[k]} for k in APP_OPS],
+        "bucket": bmap.get(bucket, bucket), "idle": f",{p}," in wl.replace("\n", ","),
+        "running": bool(procs), "t": int(time.time()),
+    })
+    out("ok")
+
+
+def grant(kind, p, perm):
+    need()
+    if not PKG_RE.match(p) or not KEY_RE.match(perm):
+        die("bad argument")
+    full = perm if "." in perm else "android.permission." + perm
+    r = sh(f"pm {kind} --user 0 {p} {full}")
+    if r:
+        die(r.splitlines()[-1][:120])
+    log(new_batch(), f"{'Granted' if kind == 'grant' else 'Revoked'} {perm} for", p,
+        [f"pm {'revoke' if kind == 'grant' else 'grant'} --user 0 {p} {full}"])
+    write_log_report()
+    app_detail_quiet(p)
+    out(f"{kind}ed {perm}")
+
+
+def app_detail_quiet(p):
+    so = sys.stdout
+    sys.stdout = open(os.devnull, "w")
+    try:
+        app_detail(p)
+    finally:
+        sys.stdout = so
+
+
+def appop(p, op, mode):
+    need()
+    if not PKG_RE.match(p) or not KEY_RE.match(op) or mode not in ("allow", "ignore", "deny", "foreground", "default"):
+        die("bad argument")
+    prev = "default"
+    for l in sh(f"appops get --user 0 {p} {op}").splitlines():
+        m = re.match(r"(?:Uid mode: )?([A-Z_]+): (\w+)", l.strip())
+        if m and m.group(1) == op:
+            prev = m.group(2)
+            break
+    r = sh(f"appops set --user 0 {p} {op} {mode}")
+    if r:
+        die(r.splitlines()[-1][:120])
+    log(new_batch(), f"{op} → {mode} for", p, [f"appops set --user 0 {p} {op} {prev}"])
+    write_log_report()
+    app_detail_quiet(p)
+    out(f"{op}: {mode}")
+
+
+def bucket(p, b):
+    need()
+    if not PKG_RE.match(p) or b not in ("active", "working_set", "frequent", "rare", "restricted"):
+        die("bad argument")
+    r = sh(f"am set-standby-bucket --user 0 {p} {b}")
+    if r:
+        die(r.splitlines()[-1][:120])
+    log(new_batch(), f"Bucket {b} for", p, [f"am set-standby-bucket --user 0 {p} active"])
+    write_log_report()
+    app_detail_quiet(p)
+    out(f"standby bucket: {b}")
+
+
+def idle(p, on):
+    need()
+    if not PKG_RE.match(p):
+        die("bad package")
+    sign, undo = ("+", "-") if on == "on" else ("-", "+")
+    sh(f"dumpsys deviceidle whitelist {sign}{p}")
+    log(new_batch(), f"Battery optimization {'off' if on == 'on' else 'on'} for", p, [f"dumpsys deviceidle whitelist {undo}{p}"])
+    write_log_report()
+    app_detail_quiet(p)
+    out("doze whitelist " + ("added" if on == "on" else "removed"))
+
+
+# ---------- presets ----------
+
+def lang_keep(p):
+    tail = p.rsplit(".", 1)[-1].replace("lang_", "")
+    return tail[:2] in KEEP_LANGS or tail.startswith("en" + "es") or tail in ("esmx", "esus", "eses", "enus")
+
+
+def preset_items(name, apps):
+    by = {a["p"]: a for a in apps}
+    items = []
+    for pat, risk, note in PRESETS[name]:
+        if pat.endswith("*"):
+            for p in sorted(by):
+                if p.startswith(pat[:-1]):
+                    keep = lang_keep(p)
+                    items.append({"p": p, "n": name_of(p), "risk": "caution" if keep else "safe",
+                                  "note": "a language you use" if keep else note, "st": by[p]["st"]})
+        elif pat in by:
+            items.append({"p": pat, "n": name_of(pat), "risk": risk, "note": note, "st": by[pat]["st"]})
+    return items
+
+
+def presets_report():
+    apps = read("apps.json", {}).get("apps") or refresh_apps()
+    res = []
+    for k in PRESETS:
+        items = preset_items(k, apps)
+        res.append({"id": k, "title": PRESET_TITLES[k], "items": items,
+                    "active": sum(i["st"] == "on" for i in items),
+                    "safe": [i["p"] for i in items if i["risk"] == "safe" and i["st"] == "on"]})
+    write("presets.json", {"t": int(time.time()), "presets": res})
+
+
+# ---------- reports ----------
+
+def uid_map():
+    m = {}
+    for l in sh("pm list packages --user 0 -U").splitlines():
+        r = re.match(r"package:(\S+) uid:(\d+)", l)
+        if r:
+            m.setdefault(int(r.group(2)), r.group(1))
+    return m
+
+
+def uid_name(u, um):
+    m = re.match(r"u0a(\d+)", u)
+    if m:
+        return um.get(10000 + int(m.group(1)), u)
+    if u.isdigit():
+        return {"0": "kernel / root", "1000": "Android system", "1001": "Radio (phone)", "1002": "Bluetooth",
+                "1013": "Media", "1041": "Audio server", "1047": "Camera server"}.get(u, um.get(int(u), "uid " + u))
+    return u
+
+
+def report(kind):
+    if kind == "apks":
+        files = []
+        for d in ("~/Downloads", "~/downloads", "~/apks", "~"):
+            for f in glob.glob(os.path.expanduser(d) + "/*.apk") + glob.glob(os.path.expanduser(d) + "/*.apks"):
+                files.append({"path": f, "n": os.path.basename(f), "size": os.path.getsize(f), "t": int(os.path.getmtime(f))})
+        files.sort(key=lambda f: -f["t"])
+        write("apks.json", {"t": int(time.time()), "items": files[:40]})
+        return out(f"{len(files)} APKs")
+    if kind == "log":
+        write_log_report()
+        return out("ok")
+    if kind == "profiles":
+        profiles_report()
+        return out("ok")
+    if kind == "presets":
+        presets_report()
+        return out("ok")
+    need()
+    now = int(time.time())
+    if kind == "audit":
+        groups = []
+        sysset = list_set("-s")
+        for op, title in AUDIT_OPS:
+            ps = set()
+            for mode in ("allow", "foreground"):
+                for l in sh(f"appops query-op --user 0 {op} {mode}").splitlines():
+                    l = l.strip()
+                    if PKG_RE.match(l) and "." in l:
+                        ps.add(l)
+            groups.append({"op": op, "title": title, "apps": [{"p": p, "n": name_of(p), "s": p in sysset} for p in sorted(ps, key=name_of)]})
+
+        def comps(s):
+            return sorted({c.split("/")[0] for c in s.split(":") if "/" in c})
+        acc = comps(sh("settings get secure enabled_accessibility_services"))
+        nl = comps(sh("settings get secure enabled_notification_listeners"))
+        admins = sorted(set(re.findall(r"admin=ComponentInfo\{([^/}]+)/", sh("dumpsys device_policy"))))
+        for title, ps in (("Accessibility services", acc), ("Notification listeners", nl), ("Device admins", admins)):
+            groups.insert(0, {"op": None, "title": title, "apps": [{"p": p, "n": name_of(p), "s": p in sysset} for p in ps]})
+        write("audit.json", {"t": now, "groups": groups})
+    elif kind == "battery":
+        um = uid_map()
+        o = sh("dumpsys batterystats", timeout=60)
+        sec = o.split("Estimated power use (mAh):", 1)
+        items, cap, drain = [], None, None
+        if len(sec) > 1:
+            body = sec[1]
+            c = re.search(r"Capacity: (\d+).*?Computed drain: ([\d.]+)", body)
+            if c:
+                cap, drain = int(c.group(1)), float(c.group(2))
+            for m in re.finditer(r"^\s+UID (\S+): ([\d.]+)", body.split("\n\n")[0] if False else body, re.M):
+                items.append({"p": uid_name(m.group(1), um), "mah": float(m.group(2))})
+                if len(items) >= 25:
+                    break
+        tot = sum(i["mah"] for i in items) or 1
+        for i in items:
+            i["n"] = name_of(i["p"]) if PKG_RE.match(i["p"]) and "." in i["p"] else i["p"]
+            i["pct"] = round(i["mah"] * 100 / (drain or tot), 1)
+        wl = [l.split(",")[1] for l in sh("dumpsys deviceidle whitelist").splitlines() if l.startswith("user,")]
+        restricted = []
+        for l in sh("am get-standby-bucket --user 0").splitlines():
+            m = re.match(r"(\S+): (\d+)", l.strip())
+            if m and m.group(2) == "45":
+                restricted.append(m.group(1))
+        write("battery.json", {"t": now, "capacity": cap, "drain": drain, "items": items,
+                               "whitelist": [{"p": p, "n": name_of(p)} for p in wl],
+                               "restricted": [{"p": p, "n": name_of(p)} for p in restricted]})
+    elif kind == "memory":
+        prot = protected()
+        o = sh("dumpsys meminfo", timeout=60)
+        items = []
+        blk = o.split("Total PSS by process:", 1)
+        if len(blk) > 1:
+            for l in blk[1].splitlines()[1:]:
+                m = re.match(r"\s+([\d,]+)K: (\S+) \(pid (\d+)", l)
+                if not m:
+                    break
+                items.append({"kb": int(m.group(1).replace(",", "")), "p": m.group(2), "pid": int(m.group(3))})
+                if len(items) >= 30:
+                    break
+        mi = sh("cat /proc/meminfo")
+        g = lambda k: int((re.search(rf"{k}:\s+(\d+)", mi) or [0, 0])[1])
+        for i in items:
+            base = i["p"].split(":")[0]
+            i["n"] = name_of(base) + (" :" + i["p"].split(":", 1)[1][:18] if ":" in i["p"] else "")
+            i["base"] = base
+            i["x"] = base in prot
+        write("memory.json", {"t": now, "total": g("MemTotal") * 1024, "avail": g("MemAvailable") * 1024,
+                              "swap": (g("SwapTotal") - g("SwapFree")) * 1024, "items": items})
+    elif kind == "cpu":
+        prot = protected()
+        o = sh("top -b -n 2 -d 1 -m 25 -s 3 -o PID,USER,%CPU,%MEM,RES,ARGS", timeout=20)
+        items, hdr = [], False
+        for l in o.splitlines():
+            if re.match(r"\s*PID\s+USER", l):
+                hdr, items = True, []
+                continue
+            if hdr:
+                p = l.split(None, 5)
+                if len(p) == 6:
+                    try:
+                        cpu = float(p[2])
+                    except ValueError:
+                        continue
+                    args = p[5].strip()
+                    if args.startswith("top -b"):
+                        continue
+                    base = args.split()[0].split(":")[0] if args else ""
+                    items.append({"pid": int(p[0]), "user": p[1], "cpu": cpu, "mem": p[3], "res": p[4],
+                                  "cmd": args[:60], "base": base if PKG_RE.match(base) and "." in base and base not in prot else None})
+        th = sh("dumpsys thermalservice")
+        status = int((re.search(r"Thermal Status: (\d+)", th) or [0, 0])[1])
+        temps = []
+        for m in re.finditer(r"Temperature\{mValue=([\d.\-]+), mType=(\d+), mName=(\w+), mStatus=(\d+)\}", th.split("Current temperatures from HAL:")[-1]):
+            v = float(m.group(1))
+            if v > 0 and m.group(3) not in [t["k"] for t in temps]:
+                temps.append({"k": m.group(3), "v": round(v, 1)})
+        load = sh("cat /proc/loadavg").split()[:3]
+        write("cpu.json", {"t": now, "items": items[:25], "thermal": status, "temps": temps[:8], "load": load})
+    elif kind == "storage":
+        o = sh("dumpsys diskstats", timeout=30)
+        def arr(k):
+            m = re.search(rf"^{k}: (\[.*\])$", o, re.M)
+            return json.loads(m.group(1)) if m else []
+        names, sz, data, cache = arr("Package Names"), arr("App Sizes"), arr("App Data Sizes"), arr("Cache Sizes")
+        items = []
+        for i, p in enumerate(names):
+            a, d, c = (sz[i] if i < len(sz) else 0), (data[i] if i < len(data) else 0), (cache[i] if i < len(cache) else 0)
+            items.append({"p": p, "n": name_of(p), "app": a, "data": d, "cache": c, "total": a + d + c})
+        items.sort(key=lambda x: -x["total"])
+        df = sh("df /data | tail -1").split()
+        write("storage.json", {"t": now, "items": items[:40], "cache": sum(i["cache"] for i in items),
+                               "used": int(df[2]) * 1024 if len(df) > 3 and df[2].isdigit() else None,
+                               "free": int(df[3]) * 1024 if len(df) > 3 and df[3].isdigit() else None})
+    elif kind in ("crash", "anr"):
+        if kind == "crash":
+            o = sh("logcat -d -b crash -v brief -t 300", timeout=20)
+            items = []
+            for blk in re.split(r"\n(?=E/AndroidRuntime.*FATAL EXCEPTION|F/libc .*Fatal signal)", "\n" + o):
+                ls = [l for l in blk.strip().splitlines() if l.strip()]
+                if not ls:
+                    continue
+                txt = "\n".join(re.sub(r"^[A-Z]/[\w.]+\s*\(\s*\d+\):\s?", "", l) for l in ls)
+                pm = re.search(r"Process: ([\w.:]+)", txt) or re.search(r">>> ([\w.:]+) <<<", txt)
+                ex = next((l for l in txt.splitlines() if re.match(r"^[\w.$]+(Exception|Error)", l)), ls[0][:120])
+                items.append({"p": pm.group(1) if pm else "?", "head": ex[:160], "body": txt[:1500]})
+            items.reverse()
+        else:
+            o = sh("logcat -d -b events -v epoch -t 2000 | grep am_anr", timeout=20)
+            items = []
+            for l in reversed(o.splitlines()):
+                m = re.match(r"\s*([\d.]+).*am_anr\s*:\s*\[\d+,\d+,([\w.:]+),\d+,(.*)\]", l)
+                if m:
+                    items.append({"t": int(float(m.group(1))), "p": m.group(2), "head": m.group(3)[:160], "body": l[:600]})
+        for i in items:
+            i["n"] = name_of(i["p"].split(":")[0])
+        write(kind + ".json", {"t": now, "items": items[:30]})
+    elif kind == "startup":
+        startup_report()
+    else:
+        die("unknown report " + kind)
+    out("ok")
+
+
+# ---------- startup ----------
+
+BUCKETS = {5: "exempted", 10: "active", 20: "working_set", 30: "frequent", 40: "rare", 45: "restricted", 50: "never"}
+
+
+def startup_report():
+    """Apps that hook boot (BOOT_COMPLETED / LOCKED_BOOT_COMPLETED) -> startup.json."""
+    recv = {}
+    for act in ("BOOT_COMPLETED", "LOCKED_BOOT_COMPLETED"):
+        for l in sh(f"cmd package query-receivers --brief --user 0 -a android.intent.action.{act}", timeout=30).splitlines():
+            l = l.strip()
+            if "/" not in l:
+                continue
+            pkg, cls = l.split("/", 1)
+            if PKG_RE.match(pkg):
+                recv.setdefault(pkg, set()).add(cls)
+    restricted = {l.strip() for l in sh("appops query-op --user 0 RUN_ANY_IN_BACKGROUND ignore").splitlines() if PKG_RE.match(l.strip())}
+    buckets = {}
+    for l in sh("am get-standby-bucket --user 0", timeout=20).splitlines():
+        m = re.match(r"\s*([\w.]+): (\d+)", l)
+        if m:
+            buckets[m.group(1)] = BUCKETS.get(int(m.group(2)), m.group(2))
+    sysset = list_set("-s")
+    prot = protected()
+    items = []
+    for pkg, cls in recv.items():
+        wm_only = all("androidx.work" in c for c in cls)
+        items.append({"p": pkg, "n": name_of(pkg), "s": pkg in sysset, "rc": len(cls), "wm": wm_only,
+                      "bg": pkg not in restricted, "bucket": buckets.get(pkg, "?"), "x": pkg in prot})
+    items.sort(key=lambda i: (i["s"], not i["bg"], -i["rc"], i["n"].lower()))
+    write("startup.json", {"t": int(time.time()), "user": sum(not i["s"] for i in items),
+                           "sys": sum(i["s"] for i in items), "items": items})
+
+
+def background(on, ps):
+    """Allow or restrict background running (RUN_ANY_IN_BACKGROUND) for several apps, as one undoable batch."""
+    need()
+    mode = "allow" if on else "ignore"
+    prot = protected()
+    b, done = new_batch(), []
+    for p in ps:
+        if not on and p in prot:
+            continue
+        prev = "default"
+        for l in sh(f"appops get --user 0 {p} RUN_ANY_IN_BACKGROUND").splitlines():
+            m = re.match(r"(?:Uid mode: )?RUN_ANY_IN_BACKGROUND: (\w+)", l.strip())
+            if m:
+                prev = m.group(1)
+                break
+        if prev == mode:
+            continue
+        r = sh(f"appops set --user 0 {p} RUN_ANY_IN_BACKGROUND {mode}")
+        if r:
+            continue
+        log(b, "Allowed background for" if on else "Restricted background for", p,
+            [f"appops set --user 0 {p} RUN_ANY_IN_BACKGROUND {prev}"])
+        done.append(p)
+    write_log_report()
+    startup_report()
+    out(f"{'allowed' if on else 'restricted'} background for {len(done)} app(s)" if done else "nothing to change")
+
+
+# ---------- settings & system ----------
+
+def settings_get(ns, key):
+    v = sh(f"settings get {ns} {key}")
+    return None if v == "null" else v
+
+
+def set_setting(ns, key, val, label=None, batch=None):
+    if ns not in ("global", "secure", "system") or not KEY_RE.match(key):
+        die("bad setting")
+    if val is not None and not re.match(r"^[A-Za-z0-9_.:/,\-]*$", val):
+        die("bad value")
+    prev = settings_get(ns, key)
+    if val is None or val == "null":
+        sh(f"settings delete {ns} {key}")
+    else:
+        r = sh(f"settings put {ns} {key} {val}")
+        if r:
+            die(r.splitlines()[-1][:120])
+    undo = f"settings delete {ns} {key}" if prev is None else f"settings put {ns} {key} {prev}"
+    log(batch or new_batch(), label or f"Set {key} = {val}", None, [undo])
+
+
+def status():
+    if not connected():
+        out({"ok": False, "serial": SERIAL})
+        return
+    marker = "@@"
+    keys = ["getprop ro.product.model", "getprop ro.build.version.release", "getprop ro.build.version.sdk",
+            "settings get global private_dns_mode", "settings get global private_dns_specifier",
+            "settings get global animator_duration_scale", "settings get global wifi_on",
+            "settings get global bluetooth_on", "settings get global mobile_data", "settings get global airplane_mode_on",
+            "wm density", "wm size", "settings get global stay_on_while_plugged_in", "settings get system show_touches",
+            "settings get secure refresh_rate_mode", "cmd role get-role-holders android.app.role.BROWSER",
+            "cmd role get-role-holders android.app.role.HOME", "cmd role get-role-holders android.app.role.SMS",
+            "cmd role get-role-holders android.app.role.DIALER", "cmd role get-role-holders android.app.role.ASSISTANT",
+            "dumpsys thermalservice | grep 'Thermal Status'", "cat /proc/loadavg",
+            f"pm list packages --user 0 -U {LAUNCHER} >/dev/null; dumpsys package {LAUNCHER} | grep -c 'WRITE_SECURE_SETTINGS: granted=true'"]
+    o = sh(f"; echo {marker}; ".join(keys), timeout=20).split(marker)
+    v = [x.strip() for x in o] + [""] * (len(keys) - len(o))
+    dens = re.findall(r"(\d+)", v[10])
+    size = re.findall(r"(\d+x\d+)", v[11])
+    es = log_entries()
+    out({"ok": True, "serial": SERIAL, "model": v[0], "android": v[1], "sdk": v[2],
+         "dns": {"mode": v[3], "host": None if v[4] == "null" else v[4]}, "anim": v[5] if v[5] != "null" else "1.0",
+         "wifi": v[6] == "1", "bt": v[7] == "1", "data": v[8] == "1", "airplane": v[9] == "1",
+         "density": int(dens[-1]) if dens else None, "physDensity": int(dens[0]) if dens else None,
+         "size": size[-1] if size else None, "stayOn": v[12] not in ("0", "null", ""), "touches": v[13] == "1",
+         "refresh": v[14], "roles": {"browser": v[15], "home": v[16], "sms": v[17], "dialer": v[18], "assistant": v[19]},
+         "roleNames": {k: name_of(x) if PKG_RE.match(x) else "" for k, x in (("browser", v[15]), ("home", v[16]), ("sms", v[17]), ("dialer", v[18]), ("assistant", v[19]))},
+         "thermal": int((re.findall(r"\d+", v[20]) or [0])[0]), "load": (v[21].split() or ["?"])[0],
+         "wss": v[22].strip().endswith("1"), "undo": sum(1 for e in es if not e.get("undone") and e.get("undo"))})
+
+
+def dns(arg):
+    need()
+    b = new_batch()
+    if arg == "off":
+        set_setting("global", "private_dns_mode", "off", "Private DNS off", b)
+    elif arg == "auto":
+        set_setting("global", "private_dns_mode", "opportunistic", "Private DNS automatic", b)
+    else:
+        if not re.match(r"^[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$", arg):
+            die("bad hostname")
+        set_setting("global", "private_dns_specifier", arg, f"Private DNS {arg}", b)
+        set_setting("global", "private_dns_mode", "hostname", f"Private DNS {arg}", b)
+    write_log_report()
+    out("Private DNS: " + arg)
+
+
+def anim(scale):
+    need()
+    if not re.match(r"^\d(\.\d+)?$", scale):
+        die("bad scale")
+    b = new_batch()
+    for k in ("window_animation_scale", "transition_animation_scale", "animator_duration_scale"):
+        set_setting("global", k, scale, f"Animations {scale}x", b)
+    write_log_report()
+    out(f"animations {scale}x")
+
+
+def density(arg):
+    need()
+    prev = re.findall(r"(\d+)", sh("wm density"))
+    undo = f"wm density {prev[-1]}" if len(prev) > 1 else "wm density reset"
+    if arg != "reset" and not arg.isdigit():
+        die("bad density")
+    sh(f"wm density {arg}")
+    log(new_batch(), f"Density {arg}", None, [undo])
+    write_log_report()
+    out("density " + arg)
+
+
+def toggle(what, on):
+    need()
+    en = on == "on"
+    cmds = {"wifi": f"cmd wifi set-wifi-enabled {'enabled' if en else 'disabled'}",
+            "bt": f"svc bluetooth {'enable' if en else 'disable'}",
+            "data": f"svc data {'enable' if en else 'disable'}",
+            "airplane": f"cmd connectivity airplane-mode {'enable' if en else 'disable'}"}
+    if what not in cmds:
+        die("unknown toggle")
+    r = sh(cmds[what])
+    out(r.splitlines()[-1][:100] if r and "rror" in r else f"{what} {on}")
+
+
+ROLES = {"browser": "android.app.role.BROWSER", "dialer": "android.app.role.DIALER", "sms": "android.app.role.SMS",
+         "home": "android.app.role.HOME", "assistant": "android.app.role.ASSISTANT"}
+
+
+def default(role, p):
+    need()
+    if role not in ROLES or not PKG_RE.match(p):
+        die("bad argument")
+    prev = sh(f"cmd role get-role-holders --user 0 {ROLES[role]}").strip()
+    r = sh(f"cmd role add-role-holder --user 0 {ROLES[role]} {p} 0")
+    if r:
+        die(r.splitlines()[-1][:120])
+    if prev and PKG_RE.match(prev):
+        log(new_batch(), f"Default {role}", p, [f"cmd role add-role-holder --user 0 {ROLES[role]} {prev} 0"])
+        write_log_report()
+    out(f"default {role}: {name_of(p)}")
+
+
+def shot():
+    need()
+    d = os.path.join(HOME, "Pictures/adb-admin")
+    os.makedirs(d, exist_ok=True)
+    f = os.path.join(d, time.strftime("shot-%Y%m%d-%H%M%S.png"))
+    r = subprocess.run(["adb", "-s", SERIAL, "exec-out", "screencap", "-p"], capture_output=True, timeout=30)
+    with open(f, "wb") as fh:
+        fh.write(r.stdout)
+    out("saved " + f.replace(HOME, "~"))
+
+
+def record(secs):
+    need()
+    secs = max(1, min(180, int(secs)))
+    d = os.path.join(HOME, "Videos/adb-admin")
+    os.makedirs(d, exist_ok=True)
+    f = os.path.join(d, time.strftime("rec-%Y%m%d-%H%M%S.mp4"))
+    tmp = "/sdcard/adb-admin-rec.mp4"
+    sh(f"screenrecord --time-limit {secs} {tmp}", timeout=secs + 20)
+    adb("pull", tmp, f, timeout=120)
+    sh(f"rm -f {tmp}")
+    out("saved " + f.replace(HOME, "~"))
+
+
+def install(path):
+    need()
+    path = os.path.expanduser(path)
+    if not os.path.isfile(path):
+        die("no such file")
+    code, o, e = adb("install", "-r", "--user", "0", path, timeout=300)
+    r = (o + e).strip().splitlines()
+    if code == 0:
+        refresh_apps()
+    out(("Installed " + os.path.basename(path)) if code == 0 else (r[-1] if r else "install failed"))
+
+
+def extract(p):
+    need()
+    if not PKG_RE.match(p):
+        die("bad package")
+    paths = [l[8:] for l in sh(f"pm path --user 0 {p}").splitlines() if l.startswith("package:")]
+    if not paths:
+        die("not found")
+    d = os.path.join(HOME, "apks", p)
+    os.makedirs(d, exist_ok=True)
+    for x in paths:
+        adb("pull", x, d, timeout=300)
+    out(f"pulled {len(paths)} APK{'s' if len(paths) > 1 else ''} to ~/apks/{p}")
+
+
+def export(name):
+    if not re.match(r"^[\w\-]+$", name):
+        die("bad name")
+    apps = read("apps.json", {}).get("apps") or refresh_apps()
+    prof = {k: [a["p"] for a in apps if a["st"] == k] for k in ("frozen", "suspended", "removed")}
+    prof["t"] = int(time.time())
+    d = os.path.join(DATA, "profiles")
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, name + ".json"), "w") as f:
+        json.dump(prof, f, indent=1)
+    profiles_report()
+    out(f"exported {sum(len(prof[k]) for k in ('frozen', 'suspended', 'removed'))} apps to {name}")
+
+
+def profiles_report():
+    d = os.path.join(DATA, "profiles")
+    items = []
+    for f in sorted(glob.glob(d + "/*.json")):
+        try:
+            p = json.load(open(f))
+            items.append({"name": os.path.basename(f)[:-5], "t": p.get("t"), "frozen": len(p.get("frozen", [])),
+                          "suspended": len(p.get("suspended", [])), "removed": len(p.get("removed", []))})
+        except Exception:
+            pass
+    write("profiles.json", {"items": items})
+
+
+def import_(name):
+    need()
+    f = os.path.join(DATA, "profiles", name + ".json")
+    if not re.match(r"^[\w\-]+$", name) or not os.path.isfile(f):
+        die("no such profile")
+    prof = json.load(open(f))
+    msgs = []
+    for k, act in (("removed", "remove"), ("frozen", "freeze"), ("suspended", "suspend")):
+        ps = [p for p in prof.get(k, []) if PKG_RE.match(p)]
+        if ps:
+            import io, contextlib
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                do(act, ps)
+            msgs.append(buf.getvalue().strip())
+    out("; ".join(msgs) or "profile is empty")
+
+
+def grantwss():
+    need()
+    r = sh(f"pm grant {LAUNCHER} android.permission.WRITE_SECURE_SETTINGS")
+    out(r.splitlines()[-1][:120] if r else "omalauncher can now change secure settings without ADB")
+
+
+def main(a):
+    if not a:
+        die(__doc__)
+    c, r = a[0], a[1:]
+    if c == "status": return status()
+    if c == "apps":
+        need(); refresh_apps(); presets_report(); write_log_report(); profiles_report(); return out("ok")
+    if c == "do" and len(r) >= 2: return do(r[0], pkgs_of(r[1:]))
+    if c == "undo": return undo_last()
+    if c == "app" and r: return app_detail(r[0])
+    if c in ("grant", "revoke") and len(r) == 2: return grant(c, r[0], r[1])
+    if c == "appop" and len(r) == 3: return appop(*r)
+    if c == "bucket" and len(r) == 2: return bucket(*r)
+    if c == "idle" and len(r) == 2: return idle(*r)
+    if c in ("restrict", "unrestrict") and r: return background(c == "unrestrict", pkgs_of(r))
+    if c == "preset" and r:
+        if r[0] not in PRESETS: die("unknown preset")
+        presets_report()
+        p = next(x for x in read("presets.json")["presets"] if x["id"] == r[0])
+        if not p["safe"]: return out("nothing safe left to freeze in " + p["title"])
+        return do("remove", p["safe"])
+    if c == "report" and r: return report(r[0])
+    if c == "set" and len(r) == 3:
+        need(); set_setting(r[0], r[1], None if r[2] == "null" else r[2]); write_log_report(); return out(f"{r[1]} = {r[2]}")
+    if c == "dns" and r: return dns(r[0])
+    if c == "anim" and r: return anim(r[0])
+    if c == "density" and r: return density(r[0])
+    if c == "toggle" and len(r) == 2: return toggle(*r)
+    if c == "default" and len(r) == 2: return default(*r)
+    if c == "killall":
+        need(); sh("am kill-all"); return out("killed background processes")
+    if c == "shot": return shot()
+    if c == "record": return record(r[0] if r else "15")
+    if c == "reboot" and r and r[0] in ("system", "recovery", "bootloader"):
+        need(); adb("reboot", *([] if r[0] == "system" else [r[0]]), timeout=15); return out("rebooting " + r[0])
+    if c == "install" and r: return install(" ".join(r))
+    if c == "extract" and r: return extract(r[0])
+    if c == "export" and r: return export(r[0])
+    if c == "import" and r: return import_(r[0])
+    if c == "grantwss": return grantwss()
+    die(__doc__)
+
+
+if __name__ == "__main__":
+    try:
+        main(sys.argv[1:])
+    except subprocess.TimeoutExpired:
+        die("adb timed out")

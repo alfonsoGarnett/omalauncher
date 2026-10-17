@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# dex-fix-keyboard: tune and isolate a Bluetooth keyboard for Samsung DeX
+# 1. Keeps shortcuts like Alt from waking the phone's screen or starting voice input.
+# 2. Switches to Samsung Keyboard, so Gboard's predictive text doesn't send garbled characters to terminals.
+# 3. Shows the on-screen keyboard on the external monitor instead of the phone's screen.
+
+export PATH="$HOME/.local/bin:$PATH"
+export ANDROID_SERIAL="${ANDROID_SERIAL:-127.0.0.1:5556}"
+
+echo "[dex-fix-keyboard] Tuning input settings for Samsung DeX..."
+
+# 1. On-screen keyboard on the DeX monitor (1) instead of the phone (0)
+droid settings put global keyboard_dex 1 2>/dev/null || true
+
+# 2. Hide the on-screen keyboard while a physical keyboard is connected
+droid settings put secure show_ime_with_hard_keyboard 0 2>/dev/null || true
+
+# 3. Turn off the global voice assistant that grabs media keys and Alt combinations
+droid settings put secure assistant '""' 2>/dev/null || true
+droid settings put secure voice_interaction_service '""' 2>/dev/null || true
+droid settings put secure sip_voice_input_use_side_key 0 2>/dev/null || true
+
+# 4. Make Samsung Keyboard (HoneyBoard) the main input method
+# (on DeX, Gboard doesn't isolate windows and sends broken predictive text to terminals)
+if droid ime list -s 2>/dev/null | grep -q "honeyboard"; then
+  droid ime set com.samsung.android.honeyboard/.service.HoneyBoardService >/dev/null 2>&1 || true
+fi
+
+# 5. Hand the custom XKB keymap (accents with Alt) to Omalauncher's compositor
+if command -v xkbcli >/dev/null 2>&1; then
+  (xkbcli compile-keymap --layout us-custom --options lv3:alt_switch 2>/dev/null; printf '\0') | \
+    droid "run-as dev.omalauncher.mod sh -c 'cat > files/keymap.xkb && cp files/keymap.xkb files/keymaps/keymap-0.xkb 2>/dev/null || true'" >/dev/null 2>&1 || true
+fi
+
+echo "[dex-fix-keyboard] Settings applied."

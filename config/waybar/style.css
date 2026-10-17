@@ -1,0 +1,201 @@
+@import "colors.css";
+
+@define-color background rgba(25, 25, 25, 0.45);
+@define-color waybarBg rgba(26, 27, 30, 0.55);
+@define-color foreground #eaeaef;
+@define-color surface #636e72;
+@define-color inactive #3a3a3c;
+
+@define-color accent_orange #ffa502;
+@define-color accent_green #7bed9f;
+@define-color accent_blue #7ca5ff;
+@define-color accent_critical #ef5d67;
+
+* {
+  color: @foreground;
+  border: none;
+  border-radius: 0;
+  min-height: 0;
+  font-family: 'JetBrainsMono Nerd Font', 'JetBrains Mono', 'Symbols Nerd Font Mono', monospace;
+  font-size: 13px;
+}
+
+window#waybar {
+  background: transparent;
+  margin-top: 6px;
+}
+
+window#waybar.empty #window {
+  background: transparent;
+  color: transparent;
+  padding: 0;
+  margin-left: 5px;
+  transition: .5s;
+}
+
+mpris.empty {
+  background: transparent;
+}
+
+/* Omarchy top-left logo */
+#custom-omarchy {
+  background-color: @background;
+  border-radius: 10px;
+  padding: 2px 10px;
+  margin-right: 4px;
+  font-size: 15px;
+  color: @accent_blue;
+}
+
+#custom-omarchy:hover {
+  background-color: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+}
+
+/* Workspaces */
+#workspaces {
+  background-color: @background;
+  border-radius: 10px;
+  padding: 2px 4px;
+  margin-right: 4px;
+}
+
+#workspaces button {
+  all: initial;
+  padding: 0 7px;
+  margin: 0 1.5px;
+  min-width: 12px;
+  color: @foreground;
+  border-radius: 6px;
+  font-weight: bold;
+}
+
+#workspaces button.focused,
+#workspaces button.active {
+  background-color: rgba(124, 165, 255, 0.35);
+  color: @accent_blue;
+}
+
+#workspaces button.urgent {
+  color: @accent_critical;
+}
+
+#backlight, #custom-weather, #memory, #mpris, #window,
+#tray,
+#cpu,
+#battery,
+#custom-battery,
+#network,
+#custom-network,
+#bluetooth,
+#pulseaudio,
+#custom-visualizer {
+  background-color: @background;
+  min-width: 12px;
+  border-radius: 10px;
+  padding: 2px 10px;
+  margin: 0 0 0 5px;
+}
+
+#pulseaudio.muted {
+  color: @accent_critical;
+}
+
+#pulseaudio:hover {
+  background-color: rgba(255, 255, 255, 0.2);
+  color: @accent_blue;
+}
+
+#pulseaudio.muted:hover {
+  color: @accent_critical;
+}
+
+#custom-weather {
+  background-color: @background;
+  border-radius: 10px;
+  padding: 2px 10px;
+  margin-right: 5px;
+}
+
+#clock {
+  background-color: @background;
+  border-radius: 10px;
+  padding: 2px 12px;
+  font-weight: bold;
+  margin-right: 5px;
+}
+
+/* Center Actions Capsule */
+#center-actions {
+  background-color: @background;
+  border-radius: 10px;
+  padding: 1px 4px;
+}
+
+#custom-android,
+#custom-phone,
+#custom-waybar-theme,
+#custom-gamemode {
+  background-color: transparent;
+  border-radius: 8px;
+  padding: 2px 7px;
+  margin: 0 1px;
+  font-size: 14px;
+  color: @foreground;
+}
+
+#custom-android:hover,
+#custom-phone:hover,
+#custom-waybar-theme:hover,
+#custom-gamemode:hover {
+  background-color: rgba(255, 255, 255, 0.18);
+  color: @accent_blue;
+}
+
+/* Top-right Power/Exit Button */
+#custom-power {
+  background-color: @background;
+  border-radius: 10px;
+  padding: 2px 10px;
+  margin-left: 5px;
+  font-size: 14px;
+  color: @foreground;
+}
+
+#custom-power:hover {
+  background-color: rgba(239, 93, 103, 0.3);
+  color: @accent_critical;
+}
+
+tooltip {
+  background-color: rgba(23, 23, 23, 0.85);
+  padding: 8px 12px;
+  border: 1px solid @accent_blue;
+  border-radius: 10px;
+}
+
+tooltip label {
+  color: @foreground;
+}
+
+#custom-visualizer {
+  letter-spacing: 1px;
+  color: @accent_blue;
+}
+
+.hidden {
+  opacity: 0;
+}
+
+#tray {
+  margin: 0 0 0 5px;
+  padding: 2px 6px;
+}
+
+#mpris {
+  margin-right: 5px;
+}
+
+#custom-network {
+  padding: 2px 10px;
+}

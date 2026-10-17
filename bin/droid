@@ -1,0 +1,92 @@
+#!/bin/bash
+# droid: run commands on this phone's Android side, over adb on localhost.
+#
+#   droid                  connect if needed and print the device
+#   droid <cmd...>         run a shell command on Android (as the adb shell user)
+#   droid -- <adb args>    run any adb subcommand on the phone (pull, push, install, ...)
+#   droid pair <code>      pair again with "Pair device with pairing code" (only if Android forgot this key)
+#
+# adb is pinned to 127.0.0.1:5555 (adb tcpip 5555). Turning debugging off or
+# rebooting unpins it; then, with Wireless debugging on, droid finds its port on
+# localhost, reconnects with the key Android already trusts, and pins it again.
+
+PORT=${PORT:-5556}
+DEV="127.0.0.1:$PORT"
+
+online() { [ "$(adb -s "$DEV" get-state 2>/dev/null)" = device ]; }
+
+# Open TCP ports on localhost in Wireless debugging's range, one per line.
+scan() {
+  python3 -I - <<'EOF'
+import asyncio
+async def probe(p, sem, out):
+    async with sem:
+        try:
+            r, w = await asyncio.wait_for(asyncio.open_connection("127.0.0.1", p), 0.3)
+            out.append(p); w.close()
+        except Exception: pass
+async def main():
+    out = []; sem = asyncio.Semaphore(500)
+    await asyncio.gather(*(probe(p, sem, out) for p in range(30000, 50001)))
+    print("\n".join(map(str, sorted(out))))
+asyncio.run(main())
+EOF
+}
+
+# Settings that turning Developer options off resets: keep Android from killing Linux's processes.
+reapply() {
+  adb -s "$DEV" shell 'settings put global settings_enable_monitor_phantom_procs false;
+    device_config set_sync_disabled_for_tests persistent;
+    device_config put activity_manager max_phantom_processes 2147483647;
+    dumpsys deviceidle whitelist +dev.omalauncher' >/dev/null 2>&1
+}
+
+connect() {
+  online && return 0
+  adb disconnect "$DEV" >/dev/null 2>&1
+  timeout 5 adb connect "$DEV" >/dev/null 2>&1
+  online && return 0
+  # Not pinned (debugging was off, or the phone rebooted): find Wireless debugging's port.
+  local unauthorized=0
+  for p in $(scan); do
+    timeout 5 adb connect "127.0.0.1:$p" >/dev/null 2>&1
+    case "$(adb -s "127.0.0.1:$p" get-state 2>&1)" in
+      device)
+        adb -s "127.0.0.1:$p" tcpip "$PORT" >/dev/null 2>&1
+        adb disconnect "127.0.0.1:$p" >/dev/null 2>&1
+        for i in $(seq 15); do       # adbd takes a few seconds to come back on the pinned port
+          sleep 1
+          timeout 3 adb connect "$DEV" >/dev/null 2>&1
+          if online; then reapply; return 0; fi
+        done ;;
+      *unauthorized*) unauthorized=1 ;;
+    esac
+    adb disconnect "127.0.0.1:$p" >/dev/null 2>&1
+  done
+  if [ $unauthorized = 1 ]; then
+    echo "droid: Android no longer trusts this system's key. In Wireless debugging, tap 'Pair device with pairing code', then run: droid pair <code>" >&2
+  else
+    echo "droid: can't reach Android. Turn on Settings > Developer options > Wireless debugging and try again." >&2
+  fi
+  return 1
+}
+
+if [ "$1" = pair ]; then
+  [ -n "$2" ] || { echo "usage: droid pair <6-digit code>" >&2; exit 2; }
+  for p in $(scan); do
+    if timeout 8 adb pair "127.0.0.1:$p" "$2" 2>/dev/null | grep -q '^Successfully paired'; then
+      echo "paired"; connect && echo "$DEV connected"; exit $?
+    fi
+  done
+  echo "droid: pairing failed. Keep the pairing dialog open and check the code." >&2
+  exit 1
+fi
+
+connect || exit 1
+if [ $# -eq 0 ]; then
+  echo "$DEV $(adb -s "$DEV" shell getprop ro.product.model | tr -d '\r')"
+elif [ "$1" = "--" ]; then
+  shift; exec adb -s "$DEV" "$@"
+else
+  exec adb -s "$DEV" shell "$@"
+fi

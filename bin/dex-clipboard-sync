@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# dex-clipboard-sync: Bridges Wayland-1 (Sway) clipboard & primary selection to Wayland-0 & Android
+# Event-driven: 0% CPU idle, <1ms latency.
+
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/0}"
+
+while [ ! -S "$XDG_RUNTIME_DIR/wayland-1" ]; do
+    sleep 0.5
+done
+
+# Kill old instances of this script and its watchers
+pkill -f "wl-paste.*--watch.*dex_sync" 2>/dev/null || true
+pkill -f "wl-paste.*--watch.*dex_image_sync" 2>/dev/null || true
+
+sync_clip() {
+    local text
+    text=$(cat)
+    [ -z "$text" ] && return 0
+
+    local hash
+    hash=$(printf '%s' "$text" | md5sum | cut -d' ' -f1)
+    local prev=""
+    [ -f /tmp/dex-clipboard-last ] && prev=$(cat /tmp/dex-clipboard-last 2>/dev/null)
+    [ "$hash" = "$prev" ] && return 0
+    echo "$hash" > /tmp/dex-clipboard-last
+
+    if [ -S "$XDG_RUNTIME_DIR/wayland-0" ]; then
+        printf '%s' "$text" | WAYLAND_DISPLAY=wayland-0 /usr/local/bin/dex-clip-send 2>/dev/null || true
+    fi
+}
+
+sync_image() {
+    local tmp="/tmp/dex-clipboard-sync.png"
+    cat > "$tmp"
+    [ -s "$tmp" ] || return 0
+
+    local hash
+    hash=$(md5sum "$tmp" | cut -d' ' -f1)
+    local prev=""
+    [ -f /tmp/dex-clipboard-image-last ] && prev=$(cat /tmp/dex-clipboard-image-last 2>/dev/null)
+    [ "$hash" = "$prev" ] && return 0
+    echo "$hash" > /tmp/dex-clipboard-image-last
+
+    if [ -x /usr/local/bin/droid-clip-image ]; then
+        /usr/local/bin/droid-clip-image "$tmp" >/dev/null 2>&1 || true
+    fi
+}
+
+export -f sync_clip
+export -f sync_image
+
+export WAYLAND_DISPLAY=wayland-1
+
+# Watch standard clipboard
+wl-paste -t text --watch bash -c 'sync_clip "$@"' dex_sync &
+PID1=$!
+
+# Watch primary selection (mouse drag / selection)
+wl-paste -p -t text --watch bash -c 'sync_clip "$@"' dex_sync &
+PID2=$!
+
+# Watch image clipboard
+wl-paste -t image/png --watch bash -c 'sync_image "$@"' dex_image_sync &
+PID3=$!
+
+trap "kill $PID1 $PID2 $PID3 2>/dev/null; exit 0" SIGINT SIGTERM SIGHUP
+
+wait

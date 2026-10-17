@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# droid-clip-image: send an image to Android's clipboard and its gallery
+set -e
+
+img="$1"
+if [ ! -f "$img" ]; then
+    echo "Usage: droid-clip-image <image-file>" >&2
+    exit 1
+fi
+base=$(basename "$img")
+
+if ! command -v droid >/dev/null 2>&1; then
+    exit 0
+fi
+
+# Make sure the helper dex is on Android
+if ! droid "[ -f /data/local/tmp/omarchy_clip.dex ]" >/dev/null 2>&1; then
+    droid -- push /root/.local/share/omarchy/dex/classes.dex /data/local/tmp/omarchy_clip.dex >/dev/null 2>&1 || true
+fi
+
+# 1. Copy the image to Android's shared storage
+droid mkdir -p /sdcard/Pictures/Screenshots >/dev/null 2>&1 || true
+droid -- push "$img" "/sdcard/Pictures/Screenshots/$base" >/dev/null 2>&1 || true
+
+# 2. Register it in MediaStore and put it on Android's clipboard
+droid "
+am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d 'file:///sdcard/Pictures/Screenshots/$base' >/dev/null 2>&1
+for i in \$(seq 1 20); do
+    out=\$(content query --uri content://media/external/images/media --where \"_display_name='$base'\" --projection _id 2>/dev/null)
+    id=\$(echo \"\$out\" | grep -oE '_id=[0-9]+' | head -n 1 | cut -d= -f2)
+    if [ -n \"\$id\" ]; then
+        CLASSPATH=/data/local/tmp/omarchy_clip.dex app_process /data/local/tmp dev.omarchy.ClipImage \"content://media/external/images/media/\$id\"
+        exit 0
+    fi
+    sleep 0.1
+done
+"

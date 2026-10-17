@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""omarchy-android-menu: a Wofi menu of the phone's Android apps for the Omarchy desktop, plus the task manager.
+
+Apps come from the launcher's android-apps.json (adb as a fallback). Picking one opens it through a widget that
+has a launchPkg state (the niagara widget by default; set OMARCHY_LAUNCH_WIDGET to another .owl, or to nothing
+to skip it), else with `droid am start` over adb.
+"""
+import json
+import os
+import subprocess
+import sys
+
+KNOWN_NAMES = {
+    'com.whatsapp': 'WhatsApp',
+    'org.telegram.messenger': 'Telegram',
+    'com.spotify.music': 'Spotify',
+    'com.google.android.youtube': 'YouTube',
+    'com.android.chrome': 'Google Chrome',
+    'org.mozilla.firefox': 'Firefox (Android)',
+    'com.android.settings': 'Android settings',
+    'com.sec.android.app.myfiles': 'My Files (Samsung)',
+    'com.sec.android.app.camera': 'Camera',
+    'com.sec.android.gallery3d': 'Gallery',
+    'com.google.android.apps.photos': 'Google Photos',
+    'com.google.android.apps.maps': 'Google Maps',
+    'com.google.android.gm': 'Gmail',
+    'com.microsoft.teams': 'Microsoft Teams',
+    'com.microsoft.office.outlook': 'Microsoft Outlook',
+    'com.discord': 'Discord',
+    'com.openai.chatgpt': 'ChatGPT',
+    'com.anthropic.claude': 'Claude (Android)',
+    'com.twitter.android': 'X (Twitter)',
+    'com.ubercab': 'Uber',
+    'com.ubercab.eats': 'Uber Eats',
+    'com.mercadolibre': 'Mercado Libre',
+    'com.netflix.mediaclient': 'Netflix',
+    'org.videolan.vlc': 'VLC Media Player',
+    'com.termux': 'Termux Terminal',
+    'dev.omalauncher': 'Omalauncher (home)',
+}
+
+def ensure_wayland_env():
+    if not os.environ.get("WAYLAND_DISPLAY"):
+        if os.path.exists("/run/user/0/wayland-1"):
+            os.environ["WAYLAND_DISPLAY"] = "wayland-1"
+        elif os.path.exists("/run/user/0/wayland-0"):
+            os.environ["WAYLAND_DISPLAY"] = "wayland-0"
+    os.environ["GDK_BACKEND"] = "wayland"
+
+def load_apps_native():
+    candidates = [
+        "/run/user/0/android-apps.json",
+        os.path.expanduser("~/.local/share/omarchy/android-apps.json"),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list) and data:
+                    return data
+            except Exception:
+                continue
+    return []
+
+def load_apps_fallback():
+    try:
+        out = subprocess.check_output([
+            'droid', 'cmd', 'package', 'query-activities', '--components',
+            '--user', '0', '-a', 'android.intent.action.MAIN',
+            '-c', 'android.intent.category.LAUNCHER'
+        ], timeout=5).decode('utf-8', errors='ignore')
+        components = [c.strip() for c in out.splitlines() if '/' in c]
+        seen = set()
+        apps = []
+        for c in components:
+            pkg, _, act = c.partition('/')
+            if pkg not in seen:
+                seen.add(pkg)
+                name = KNOWN_NAMES.get(pkg, pkg.split('.')[-1].capitalize())
+                apps.append({"name": name, "package": pkg, "activity": act})
+        return apps
+    except Exception:
+        return []
+
+LAUNCH_WIDGET = os.environ.get("OMARCHY_LAUNCH_WIDGET", "30-niagara.owl")
+
+def launch_app(pkg, activity, app_name):
+    # 1. Natively, through a launcher widget with a launchPkg state (owl-send)
+    try:
+        if not LAUNCH_WIDGET:
+            raise RuntimeError("no launch widget")
+        ret = subprocess.run(
+            ['owl-send', LAUNCH_WIDGET, 'set', 'launchPkg', pkg],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=1
+        )
+        if ret.returncode == 0:
+            subprocess.run(['notify-send', '󰯃 Omarchy Android', f'Opening {app_name}'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return
+    except Exception:
+        pass
+
+    # 2. Otherwise with droid am start (adb), when it's available
+    comp = f"{pkg}/{activity}" if activity else None
+    cmd = ['droid', 'am', 'start', '-n', comp] if comp else ['droid', 'am', 'start', '-p', pkg]
+    try:
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(['notify-send', '󰯃 Android bridge', f'Opening {app_name}'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+def main():
+    ensure_wayland_env()
+    apps = load_apps_native()
+    if not apps:
+        apps = load_apps_fallback()
+
+    if not apps:
+        subprocess.run(['notify-send', 'Android bridge error', 'No installed apps found'])
+        sys.exit(1)
+
+    app_map = {}
+    seen_pkgs = set()
+    for item in apps:
+        pkg = item.get("package")
+        if not pkg or pkg in seen_pkgs:
+            continue
+        seen_pkgs.add(pkg)
+        raw_name = item.get("name") or KNOWN_NAMES.get(pkg) or pkg.split('.')[-1].capitalize()
+        label = f"  {raw_name}  ({pkg})"
+        app_map[label] = {
+            "name": raw_name,
+            "package": pkg,
+            "activity": item.get("activity", "")
+        }
+
+    TASK_MGR_LABEL = "󰍛  Android task manager (watch and close processes)"
+    menu_entries = [TASK_MGR_LABEL] + sorted(app_map.keys(), key=lambda x: (not any(k in x for k in KNOWN_NAMES.values()), x.lower()))
+    input_text = "\n".join(menu_entries)
+
+    try:
+        subprocess.run(['pkill', '-x', 'wofi'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        p = subprocess.Popen(
+            ['wofi', '--dmenu', '-i', '-p', '󰯃 Android apps and tasks:'],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True
+        )
+        chosen, _ = p.communicate(input=input_text)
+        chosen = chosen.strip()
+        if chosen == TASK_MGR_LABEL:
+            subprocess.Popen(['/root/.local/bin/omarchy-task-manager'])
+        elif chosen in app_map:
+            target = app_map[chosen]
+            launch_app(target["package"], target["activity"], target["name"])
+    except Exception:
+        pass
+
+if __name__ == '__main__':
+    main()

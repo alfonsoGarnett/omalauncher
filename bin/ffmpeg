@@ -1,0 +1,45 @@
+#!/bin/bash
+# Wrapper for ffmpeg to fix FFmpeg 9.0 -skip_frame nokey parser error with Yazi and audio containers
+
+# Run original ffmpeg
+/usr/bin/ffmpeg "$@"
+ret=$?
+
+if [ $ret -eq 234 ]; then
+    args=()
+    skip_next=0
+    has_skip=0
+    for arg in "$@"; do
+        if [ "$arg" = "-skip_frame" ]; then
+            skip_next=1
+            has_skip=1
+            continue
+        fi
+        if [ $skip_next -eq 1 ]; then
+            skip_next=0
+            continue
+        fi
+        args+=("$arg")
+    done
+    if [ $has_skip -eq 1 ]; then
+        /usr/bin/ffmpeg "${args[@]}"
+        ret=$?
+    fi
+fi
+
+# If thumbnail extraction fails because the container has no video or attached picture,
+# exit 0 so file managers like Yazi don't show error toasts for files without album art.
+if [ $ret -ne 0 ]; then
+    is_thumb=0
+    for a in "$@"; do
+        if [ "$a" = "image2" ] || [ "$a" = "disp:attached_pic" ]; then
+            is_thumb=1
+            break
+        fi
+    done
+    if [ $is_thumb -eq 1 ]; then
+        exit 0
+    fi
+fi
+
+exit $ret

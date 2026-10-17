@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Wrapper ensuring Waybar runs on Sway's Wayland layer-shell protocol
+export GDK_BACKEND=wayland
+RUN_DIR="${XDG_RUNTIME_DIR:-/run/user/0}"
+if [ -S "$RUN_DIR/wayland-1" ]; then
+    export WAYLAND_DISPLAY=wayland-1
+    SWAY_SOCKET=$(ls -t "$RUN_DIR"/sway-ipc.*.sock 2>/dev/null | head -n1)
+    [ -n "$SWAY_SOCKET" ] && export SWAYSOCK="$SWAY_SOCKET"
+elif [ -z "$WAYLAND_DISPLAY" ]; then
+    export WAYLAND_DISPLAY=wayland-0
+fi
+exec /usr/bin/waybar "$@"

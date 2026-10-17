@@ -1,0 +1,12 @@
+#!/bin/sh
+# Context detection: Desktop Linux (Sway/DeX) vs Phone Screen (Omalauncher)
+if [ "$OMARCHY_TARGET" = "phone" ]; then
+    export WAYLAND_DISPLAY=wayland-0
+elif [ "$OMARCHY_TARGET" = "dex" ]; then
+    export WAYLAND_DISPLAY=wayland-1
+elif [ -n "$SWAYSOCK" ] && [ -S "${XDG_RUNTIME_DIR:-/run/user/0}/wayland-1" ]; then
+    export WAYLAND_DISPLAY=wayland-1
+elif [ -z "$WAYLAND_DISPLAY" ]; then
+    export WAYLAND_DISPLAY=wayland-0
+fi
+exec /usr/bin/alacritty "$@"

@@ -1,0 +1,232 @@
+# Sway config for Omarchy DeX (a standalone desktop)
+# The modifier for windows and tiles:
+# Alt + Control (Mod1+Control, and Control+Mod5 so it works with Level3 too)
+set $mod Mod1+Control
+set $mod5 Control+Mod5
+
+font pango:JetBrains Mono, Symbols Nerd Font Mono 10
+
+# Omarchy's theme colors
+include ~/.config/sway/colors
+
+# Background and scale, kept in step for the Samsung DeX monitor
+output * bg ~/.local/state/omarchy/current/background fill
+include ~/.config/sway/outputs
+
+# Terminal
+bindsym $mod+Return exec foot
+bindsym $mod5+Return exec foot
+
+# Close the active window
+bindsym $mod+q kill
+bindsym $mod+Shift+q kill
+bindsym $mod5+q kill
+bindsym $mod5+Shift+q kill
+
+# App launcher (Wofi)
+bindsym $mod+d exec pkill -x wofi || wofi --show drun --prompt "Search apps..."
+bindsym $mod5+d exec pkill -x wofi || wofi --show drun --prompt "Search apps..."
+
+# App shortcuts
+bindsym $mod+Shift+n exec foot -e nvim
+bindsym $mod5+Shift+n exec foot -e nvim
+bindsym $mod+Shift+b exec firefox
+bindsym $mod5+Shift+b exec firefox
+bindsym $mod+Shift+f exec thunar
+bindsym $mod5+Shift+f exec thunar
+bindsym $mod+Shift+y exec foot -e yazi
+bindsym $mod5+Shift+y exec foot -e yazi
+bindsym $mod+Shift+a exec /root/.local/bin/omarchy-android-menu
+bindsym $mod5+Shift+a exec /root/.local/bin/omarchy-android-menu
+bindsym $mod+Shift+w exec /root/.local/bin/omarchy-widgets-menu
+bindsym $mod5+Shift+w exec /root/.local/bin/omarchy-widgets-menu
+bindsym $mod+Shift+slash exec foot --app-id=omarchy-cheatsheet -o 'main.font=JetBrains Mono:size=11' -e /root/.local/bin/omarchy-cheatsheet
+bindsym $mod5+Shift+slash exec foot --app-id=omarchy-cheatsheet -o 'main.font=JetBrains Mono:size=11' -e /root/.local/bin/omarchy-cheatsheet
+bindsym $mod+Shift+t exec /root/.local/bin/omarchy-waybar-theme
+bindsym $mod5+Shift+t exec /root/.local/bin/omarchy-waybar-theme
+bindsym $mod+Shift+s exec /root/.local/bin/omarchy-snipping-tool
+bindsym $mod5+Shift+s exec /root/.local/bin/omarchy-snipping-tool
+bindsym Control+Shift+Escape exec /root/.local/bin/omarchy-task-manager
+bindsym $mod+Escape exec /root/.local/bin/omarchy-task-manager
+bindsym $mod5+Escape exec /root/.local/bin/omarchy-task-manager
+bindsym $mod+Shift+Escape exec /root/.local/bin/omarchy-task-manager
+bindsym $mod5+Shift+Escape exec /root/.local/bin/omarchy-task-manager
+bindsym $mod+Shift+c reload
+bindsym $mod5+Shift+c reload
+bindsym $mod+Shift+e exit
+bindsym $mod5+Shift+e exit
+
+# Mouse, cursor and touchpad
+seat seat0 {
+    xcursor_theme Adwaita 24
+    hide_cursor 0
+}
+
+# Keyboard: US layout with Right Shift as AltGr for Spanish accents
+# Right Shift + a/e/i/o/u -> á, é, í, ó, ú
+# Right Shift + Shift + a/e/i/o/u -> Á, É, Í, Ó, Ú
+# Right Shift + n -> ñ / Ñ
+# Right Shift + 1 -> ¡
+# Right Shift + / -> ¿
+# Right Shift + w -> ü / Ü
+input type:keyboard {
+    xkb_layout "us-rshift"
+    repeat_delay 220
+    repeat_rate 40
+}
+
+input type:pointer {
+    accel_profile "flat"
+    pointer_accel 0
+    natural_scroll disabled
+    scroll_factor 1.0
+    middle_emulation disabled
+}
+
+input type:touchpad {
+    tap enabled
+    tap_button_map lrm
+    click_method clickfinger
+    natural_scroll enabled
+    dwt enabled
+}
+
+# Window management / tiling
+bindsym $mod+b splith
+bindsym $mod5+b splith
+bindsym $mod+v splitv
+bindsym $mod5+v splitv
+bindsym $mod+s layout stacking
+bindsym $mod5+s layout stacking
+bindsym $mod+w layout tabbed
+bindsym $mod5+w layout tabbed
+bindsym $mod+e layout toggle split
+bindsym $mod5+e layout toggle split
+bindsym $mod+f fullscreen toggle
+bindsym $mod5+f fullscreen toggle
+bindsym $mod+Shift+space floating toggle
+bindsym $mod5+Shift+space floating toggle
+bindsym $mod+space focus mode_toggle
+bindsym $mod5+space focus mode_toggle
+
+# Automatic layouts
+# Ctrl+Alt+U: master + stack
+bindsym $mod+u exec /root/.local/bin/omarchy-layout master
+bindsym $mod5+u exec /root/.local/bin/omarchy-layout master
+
+# Ctrl+Alt+Y: smart grid
+bindsym $mod+y exec /root/.local/bin/omarchy-layout grid
+bindsym $mod5+y exec /root/.local/bin/omarchy-layout grid
+
+# Ctrl+Alt+I: columns
+bindsym $mod+i exec /root/.local/bin/omarchy-layout columns
+bindsym $mod5+i exec /root/.local/bin/omarchy-layout columns
+
+# Ctrl+Alt+O: rows
+bindsym $mod+o exec /root/.local/bin/omarchy-layout rows
+bindsym $mod5+o exec /root/.local/bin/omarchy-layout rows
+
+# Ctrl+Alt+P: layout menu
+bindsym $mod+p exec /root/.local/bin/omarchy-layout menu
+bindsym $mod5+p exec /root/.local/bin/omarchy-layout menu
+
+# Moving between windows (Ctrl+Alt with hjkl, or with the arrows)
+bindsym $mod+h focus left
+bindsym $mod5+h focus left
+bindsym $mod+j focus down
+bindsym $mod5+j focus down
+bindsym $mod+k focus up
+bindsym $mod5+k focus up
+bindsym $mod+l focus right
+bindsym $mod5+l focus right
+
+bindsym $mod+Left focus left
+bindsym $mod5+Left focus left
+bindsym $mod+Down focus down
+bindsym $mod5+Down focus down
+bindsym $mod+Up focus up
+bindsym $mod5+Up focus up
+bindsym $mod+Right focus right
+bindsym $mod5+Right focus right
+
+bindsym $mod+Shift+h move left
+bindsym $mod5+Shift+h move left
+bindsym $mod+Shift+j move down
+bindsym $mod5+Shift+j move down
+bindsym $mod+Shift+k move up
+bindsym $mod5+Shift+k move up
+bindsym $mod+Shift+l move right
+bindsym $mod5+Shift+l move right
+
+bindsym $mod+Shift+Left move left
+bindsym $mod5+Shift+Left move left
+bindsym $mod+Shift+Down move down
+bindsym $mod5+Shift+Down move down
+bindsym $mod+Shift+Up move up
+bindsym $mod5+Shift+Up move up
+bindsym $mod+Shift+Right move right
+bindsym $mod5+Shift+Right move right
+
+# Workspaces 1 to 5
+set $ws1 "1"
+set $ws2 "2"
+set $ws3 "3"
+set $ws4 "4"
+set $ws5 "5"
+
+bindsym $mod+1 workspace number $ws1
+bindsym $mod5+1 workspace number $ws1
+bindsym $mod+2 workspace number $ws2
+bindsym $mod5+2 workspace number $ws2
+bindsym $mod+3 workspace number $ws3
+bindsym $mod5+3 workspace number $ws3
+bindsym $mod+4 workspace number $ws4
+bindsym $mod5+4 workspace number $ws4
+bindsym $mod+5 workspace number $ws5
+bindsym $mod5+5 workspace number $ws5
+
+bindsym $mod+Shift+1 move container to workspace number $ws1
+bindsym $mod5+Shift+1 move container to workspace number $ws1
+bindsym $mod+Shift+2 move container to workspace number $ws2
+bindsym $mod5+Shift+2 move container to workspace number $ws2
+bindsym $mod+Shift+3 move container to workspace number $ws3
+bindsym $mod5+Shift+3 move container to workspace number $ws3
+bindsym $mod+Shift+4 move container to workspace number $ws4
+bindsym $mod5+Shift+4 move container to workspace number $ws4
+bindsym $mod+Shift+5 move container to workspace number $ws5
+bindsym $mod5+Shift+5 move container to workspace number $ws5
+
+# Borders
+default_border pixel 2
+default_floating_border pixel 2
+
+# Gaps between windows (like mac-transparent's hyprland.conf: gaps_in 4 per side, gaps_out 8)
+gaps inner 8
+gaps outer 4
+smart_gaps off
+
+# Notification daemon
+exec mako
+
+exec_always "pkill -x dex-clipboard-sync 2>/dev/null || true; /usr/local/bin/dex-clipboard-sync >/tmp/dex-clipboard-sync.log 2>&1 &"
+exec_always "/usr/local/bin/mouse-sync-sway"
+
+# Floating windows for desktop widgets and status
+for_window [app_id="omarchy-widget-viewer"] floating enable, resize set 680 780
+for_window [app_id="omarchy-mouse-gui"] floating enable, resize set 540 520
+for_window [app_id="omarchy-device-status"] floating enable, resize set 480 520
+for_window [app_id="omarchy-cheatsheet"] floating enable, resize set 920 680
+for_window [app_id="imv"] floating enable, resize set 850 650
+for_window [app_id="org.pwmt.zathura"] floating enable, resize set 960 850
+for_window [app_id="mpv"] floating enable, resize set 850 480
+for_window [app_id="omarchy-audio-player"] floating enable, resize set 640 180, move position center
+for_window [app_id="swappy"] floating enable
+for_window [app_id="omarchy-waybar-scale"] floating enable, resize set 480 420
+for_window [app_id="omarchy-style-editor"] floating enable, resize set 1000 720
+for_window [app_id="omarchy-task-manager"] floating enable, resize set 850 550
+for_window [title="Android task manager"] floating enable, resize set 850 550
+
+# Waybar, at the top
+bar {
+    swaybar_command waybar
+}

@@ -1,0 +1,25 @@
+#!/bin/bash
+# mouse-sync-sway: apply the launcher's mouse.conf scroll settings to Sway (at startup and on reload)
+CONF="${HOME:-/root}/.config/omalauncher/mouse.conf"
+[ -f "$CONF" ] || exit 0
+
+scrl=$(grep -E "^scroll_speed=" "$CONF" | cut -d'=' -f2 | tr -d ' ')
+nat=$(grep -E "^natural_scroll=" "$CONF" | cut -d'=' -f2 | tr -d ' ')
+
+sway_pid=$(pgrep -x sway 2>/dev/null | head -n1)
+if [ -n "$sway_pid" ] && [ -S "/run/user/0/sway-ipc.0.${sway_pid}.sock" ]; then
+    export SWAYSOCK="/run/user/0/sway-ipc.0.${sway_pid}.sock"
+elif [ -z "$SWAYSOCK" ] || [ ! -S "$SWAYSOCK" ]; then
+    latest_sock=$(ls -t /run/user/0/sway-ipc.*.sock 2>/dev/null | head -n1)
+    [ -n "$latest_sock" ] && export SWAYSOCK="$latest_sock"
+fi
+
+if [ -n "$SWAYSOCK" ] && [ -S "$SWAYSOCK" ]; then
+    if [ -n "$scrl" ]; then
+        swaymsg input "type:pointer" scroll_factor "$scrl" >/dev/null 2>&1 || true
+    fi
+    if [ -n "$nat" ]; then
+        [ "$nat" = "1" ] && nstatus="enabled" || nstatus="disabled"
+        swaymsg input "type:pointer" natural_scroll "$nstatus" >/dev/null 2>&1 || true
+    fi
+fi

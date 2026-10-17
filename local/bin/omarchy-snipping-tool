@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+# omarchy-snipping-tool: a Windows Snipping Tool-style screenshot tool for Sway on Omarchy DeX
+set -e
+
+# Make sure the Wayland environment is set
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/0}"
+if [ -z "$WAYLAND_DISPLAY" ]; then
+    if [ -S "$XDG_RUNTIME_DIR/wayland-1" ]; then
+        export WAYLAND_DISPLAY="wayland-1"
+    elif [ -S "$XDG_RUNTIME_DIR/wayland-0" ]; then
+        export WAYLAND_DISPLAY="wayland-0"
+    fi
+fi
+
+if [ -z "$SWAYSOCK" ]; then
+    LATEST_SWAYSOCK=$(ls -t "$XDG_RUNTIME_DIR"/sway-ipc.*.sock 2>/dev/null | head -n 1 || true)
+    if [ -n "$LATEST_SWAYSOCK" ]; then
+        export SWAYSOCK="$LATEST_SWAYSOCK"
+    fi
+fi
+
+SCREENSHOTS_DIR="$HOME/Pictures/Screenshots"
+mkdir -p "$SCREENSHOTS_DIR"
+
+TIMESTAMP=$(date +'%Y%m%d_%H%M%S')
+OUTPUT_FILE="$SCREENSHOTS_DIR/screenshot_${TIMESTAMP}.png"
+TEMP_FILE="/tmp/omarchy_snip_${TIMESTAMP}.png"
+
+# slurp colors that follow the active theme
+BORDER_COLOR="#7ca5ff"
+SELECT_COLOR="#7ca5ff33"
+BG_COLOR="#00000044"
+
+post_process() {
+    local img="$1"
+    if [ ! -f "$img" ]; then
+        return 0
+    fi
+
+    # Record its hash so the clipboard sync doesn't send it twice
+    local hash
+    hash=$(md5sum "$img" | cut -d' ' -f1)
+    echo "$hash" > /tmp/dex-clipboard-image-last
+
+    # 1. Copy it to the Wayland (Linux) clipboard
+    wl-copy -t image/png < "$img" 2>/dev/null || true
+
+    # 2. First notification
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send -i "$img" -a "Snipping" "Screenshot" "Copying to Android's clipboard..."
+    fi
+
+    # 3. Send it to Android's clipboard and gallery in the background
+    (
+        if /usr/local/bin/droid-clip-image "$img" >/dev/null 2>&1; then
+            notify-send -i "$img" -a "Snipping" "On Android's clipboard" "The image is ready to paste" 2>/dev/null || true
+        fi
+    ) &
+}
+
+get_window_boxes() {
+    if [ -n "$SWAYSOCK" ] && command -v jq >/dev/null 2>&1; then
+        swaymsg -t get_tree 2>/dev/null | jq -r '.. | select(.pid? and .visible?) | "\(.rect.x),\(.rect.y) \(.rect.width)x\(.rect.height)"' 2>/dev/null || true
+    fi
+}
+
+snip_region() {
+    local boxes
+    boxes=$(get_window_boxes)
+    local geom
+    if [ -n "$boxes" ]; then
+        geom=$(echo "$boxes" | slurp -d -b "$BG_COLOR" -c "$BORDER_COLOR" -s "$SELECT_COLOR" -w 2 2>/dev/null || true)
+    else
+        geom=$(slurp -d -b "$BG_COLOR" -c "$BORDER_COLOR" -s "$SELECT_COLOR" -w 2 2>/dev/null || true)
+    fi
+
+    [ -z "$geom" ] && exit 0
+
+    grim -g "$geom" "$OUTPUT_FILE"
+    post_process "$OUTPUT_FILE"
+}
+
+snip_fullscreen() {
+    sleep 0.2
+    grim "$OUTPUT_FILE"
+    post_process "$OUTPUT_FILE"
+}
+
+snip_edit() {
+    local boxes
+    boxes=$(get_window_boxes)
+    local geom
+    if [ -n "$boxes" ]; then
+        geom=$(echo "$boxes" | slurp -d -b "$BG_COLOR" -c "$BORDER_COLOR" -s "$SELECT_COLOR" -w 2 2>/dev/null || true)
+    else
+        geom=$(slurp -d -b "$BG_COLOR" -c "$BORDER_COLOR" -s "$SELECT_COLOR" -w 2 2>/dev/null || true)
+    fi
+
+    [ -z "$geom" ] && exit 0
+
+    grim -g "$geom" "$TEMP_FILE"
+    swappy -f "$TEMP_FILE" -o "$OUTPUT_FILE" || true
+    rm -f "$TEMP_FILE"
+
+    if [ -f "$OUTPUT_FILE" ]; then
+        post_process "$OUTPUT_FILE"
+    fi
+}
+
+snip_full_edit() {
+    sleep 0.2
+    grim "$TEMP_FILE"
+    swappy -f "$TEMP_FILE" -o "$OUTPUT_FILE" || true
+    rm -f "$TEMP_FILE"
+
+    if [ -f "$OUTPUT_FILE" ]; then
+        post_process "$OUTPUT_FILE"
+    fi
+}
+
+snip_delay() {
+    local sec=3
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send -a "Snipping" "Delayed screenshot" "Taking a full screenshot in $sec seconds..."
+    fi
+    sleep "$sec"
+    grim "$OUTPUT_FILE"
+    post_process "$OUTPUT_FILE"
+}
+
+show_menu() {
+    if ! command -v wofi >/dev/null 2>&1; then
+        snip_region
+        exit 0
+    fi
+
+    pkill -x wofi 2>/dev/null || true
+
+    local options="✂️  Snip a region or window\n🖥️  Full screen now\n✏️  Snip and annotate with Swappy\n🖼️  Full screen and annotate with Swappy\n⏱️  Full screen after a 3 s delay"
+    local chosen
+    chosen=$(printf "%b" "$options" | wofi --dmenu -i -p "󰹑 Snipping tool:" --lines 5 --width 480)
+
+    case "$chosen" in
+        *"Snip a region"*)
+            snip_region
+            ;;
+        *"Full screen now"*)
+            snip_fullscreen
+            ;;
+        *"Snip and annotate"*)
+            snip_edit
+            ;;
+        *"Full screen and annotate"*)
+            snip_full_edit
+            ;;
+        *"3 s delay"*)
+            snip_delay
+            ;;
+        *)
+            exit 0
+            ;;
+    esac
+}
+
+MODE="${1:-menu}"
+
+case "$MODE" in
+    snip|region)
+        snip_region
+        ;;
+    full|fullscreen)
+        snip_fullscreen
+        ;;
+    edit)
+        snip_edit
+        ;;
+    full-edit)
+        snip_full_edit
+        ;;
+    delay)
+        snip_delay
+        ;;
+    menu|*)
+        show_menu
+        ;;
+esac

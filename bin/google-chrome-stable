@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Google Chrome wrapper for Omarchy on Samsung DeX and Android
+
+# Context detection: Desktop Linux (Sway/DeX) vs Phone Screen
+RUN_DIR="${XDG_RUNTIME_DIR:-/run/user/0}"
+SWAY_SOCKET=$(ls -t "$RUN_DIR"/sway-ipc.*.sock 2>/dev/null | head -1)
+
+# Check if Samsung DeX external screen is active via Android settings
+DEX_EXTERNAL=0
+if command -v droid >/dev/null 2>&1; then
+    DEX_EXTERNAL=$(droid settings get system dex_on_external_display 2>/dev/null || echo 0)
+fi
+
+if [ "$OMARCHY_TARGET" = "phone" ]; then
+    export WAYLAND_DISPLAY=wayland-0
+elif [ "$OMARCHY_TARGET" = "dex" ] || [ "$DEX_EXTERNAL" = "1" ] || [ -n "$SWAYSOCK" ]; then
+    if [ -S "$RUN_DIR/wayland-1" ]; then
+        export WAYLAND_DISPLAY=wayland-1
+        [ -n "$SWAY_SOCKET" ] && export SWAYSOCK="$SWAY_SOCKET"
+    else
+        export WAYLAND_DISPLAY=wayland-0
+    fi
+elif [ -S "$RUN_DIR/wayland-1" ] && [ -n "$SWAY_SOCKET" ]; then
+    export WAYLAND_DISPLAY=wayland-1
+    export SWAYSOCK="$SWAY_SOCKET"
+elif [ -z "$WAYLAND_DISPLAY" ]; then
+    export WAYLAND_DISPLAY=wayland-0
+fi
+
+unset MESA_LOADER_DRIVER_OVERRIDE
+
+# Essential flags for running Chrome cleanly under PRoot / Wayland
+EXTRA_FLAGS=(
+    "--no-sandbox"
+    "--test-type"
+    "--ozone-platform-hint=auto"
+    "--disable-quic"
+)
+
+exec /usr/bin/google-chrome-stable "${EXTRA_FLAGS[@]}" "$@"

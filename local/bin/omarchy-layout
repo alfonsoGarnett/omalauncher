@@ -1,0 +1,290 @@
+#!/usr/bin/env python3
+"""
+omarchy-layout: rearrange the windows of the active workspace for Sway / Omarchy DeX.
+  - grid: smart grid (2x2, 2x3, 3x3)
+  - master: master + stack (a big master on the left, the rest stacked on the right)
+  - columns: side-by-side columns
+  - rows: rows from top to bottom
+  - tabbed: tabs
+  - menu: pick one from a Wofi menu
+"""
+
+import json
+import math
+import os
+import subprocess
+import sys
+
+def get_swaysock():
+    sock = os.environ.get("SWAYSOCK")
+    if sock and os.path.exists(sock):
+        return sock
+    try:
+        pid = subprocess.check_output(["pgrep", "-x", "sway"], stderr=subprocess.DEVNULL).decode().strip().split()[0]
+        sock = f"/run/user/0/sway-ipc.0.{pid}.sock"
+        if os.path.exists(sock):
+            return sock
+    except Exception:
+        pass
+    import glob
+    socks = glob.glob("/run/user/0/sway-ipc.*.sock")
+    return socks[0] if socks else None
+
+def sway_cmd(args):
+    sock = get_swaysock()
+    cmd = ["swaymsg"]
+    if sock:
+        cmd.extend(["-s", sock])
+    cmd.extend(args)
+    return subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode()
+
+def notify(title, msg):
+    try:
+        subprocess.run(["notify-send", "-a", "omarchy", title, msg], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+def get_workspace_windows():
+    tree = json.loads(sway_cmd(["-t", "get_tree"]))
+    workspaces = json.loads(sway_cmd(["-t", "get_workspaces"]))
+    focused_ws = next((w for w in workspaces if w.get("focused")), None)
+    if not focused_ws:
+        return None, [], None
+
+    ws_name = focused_ws["name"]
+
+    def find_ws_node(node, name):
+        if node.get("type") == "workspace" and node.get("name") == name:
+            return node
+        for child in node.get("nodes", []):
+            res = find_ws_node(child, name)
+            if res:
+                return res
+        return None
+
+    ws_node = find_ws_node(tree, ws_name)
+    if not ws_node:
+        return ws_name, [], None
+
+    # Collect the windows (leaves that aren't floating)
+    windows = []
+    def collect_windows(node):
+        # Skip floating nodes
+        if node.get("type") == "floating_con":
+            return
+        # A window is a leaf: no children, and an ID and a name or app_id
+        if node.get("type") == "con" and not node.get("nodes") and (node.get("name") or node.get("app_id")):
+            windows.append(node)
+            return
+        for child in node.get("nodes", []):
+            collect_windows(child)
+
+    collect_windows(ws_node)
+
+    # The focused window
+    focused_win_id = None
+    def find_focused(node):
+        nonlocal focused_win_id
+        if node.get("focused"):
+            focused_win_id = node.get("id")
+            return
+        for child in node.get("nodes", []) + node.get("floating_nodes", []):
+            find_focused(child)
+
+    find_focused(ws_node)
+
+    return ws_name, windows, focused_win_id
+
+def apply_layout(pattern):
+    ws_name, windows, focused_id = get_workspace_windows()
+    if not ws_name or not windows:
+        return
+
+    win_ids = [w["id"] for w in windows]
+    n = len(win_ids)
+
+    # With a single window, just leave fullscreen
+    if n <= 1:
+        sway_cmd([f"[con_id={win_ids[0]}] fullscreen disable"])
+        return
+
+    # If the focused window is one of them, put it first, so it becomes the master
+    if focused_id in win_ids:
+        # The focused window first, as the main (master) window
+        win_ids.remove(focused_id)
+        win_ids.insert(0, focused_id)
+
+    # Leave fullscreen in all of them
+    for wid in win_ids:
+        sway_cmd([f"[con_id={wid}] fullscreen disable"])
+
+    temp_ws = f"__temp_omarchy_layout_{ws_name}"
+
+    if pattern == "tabbed":
+        for wid in win_ids:
+            sway_cmd([f"[con_id={wid}] move to workspace {temp_ws}"])
+        sway_cmd([f"workspace {ws_name}"])
+        sway_cmd(["layout tabbed"])
+        for wid in win_ids:
+            sway_cmd([f"[con_id={wid}] move to workspace {ws_name}"])
+        sway_cmd([f"[con_id={win_ids[0]}] focus"])
+        notify("󰞖 Layout", "Tabbed")
+        return
+
+    if pattern == "rows":
+        for wid in win_ids:
+            sway_cmd([f"[con_id={wid}] move to workspace {temp_ws}"])
+        sway_cmd([f"workspace {ws_name}"])
+        sway_cmd(["layout splitv"])
+        for i, wid in enumerate(win_ids):
+            sway_cmd([f"[con_id={wid}] move to workspace {ws_name}"])
+            if i < n - 1:
+                sway_cmd([f"[con_id={wid}] focus"])
+                sway_cmd(["split v"])
+        sway_cmd([f"[con_id={win_ids[0]}] focus"])
+        notify("󰞖 Layout", f"Rows ({n} windows)")
+        return
+
+    if pattern == "columns":
+        for wid in win_ids:
+            sway_cmd([f"[con_id={wid}] move to workspace {temp_ws}"])
+        sway_cmd([f"workspace {ws_name}"])
+        sway_cmd(["layout splith"])
+        for i, wid in enumerate(win_ids):
+            sway_cmd([f"[con_id={wid}] move to workspace {ws_name}"])
+            if i < n - 1:
+                sway_cmd([f"[con_id={wid}] focus"])
+                sway_cmd(["split h"])
+        sway_cmd([f"[con_id={win_ids[0]}] focus"])
+        notify("󰞖 Layout", f"Columns ({n} windows)")
+        return
+
+    if pattern == "master":
+        # The master in the first column (60% wide with 2 or more), the rest stacked in the right one
+        master_id = win_ids[0]
+        stack_ids = win_ids[1:]
+
+        for wid in win_ids:
+            sway_cmd([f"[con_id={wid}] move to workspace {temp_ws}"])
+
+        sway_cmd([f"workspace {ws_name}"])
+        sway_cmd(["layout splith"])
+
+        # Place the master
+        sway_cmd([f"[con_id={master_id}] move to workspace {ws_name}"])
+        sway_cmd([f"[con_id={master_id}] focus"])
+        sway_cmd(["split h"])
+
+        # Place the first window of the stack
+        sway_cmd([f"[con_id={stack_ids[0]}] move to workspace {ws_name}"])
+
+        # Stack any others below it
+        for i in range(1, len(stack_ids)):
+            prev_id = stack_ids[i - 1]
+            curr_id = stack_ids[i]
+            sway_cmd([f"[con_id={prev_id}] focus"])
+            sway_cmd(["split v"])
+            sway_cmd([f"[con_id={curr_id}] move to workspace {ws_name}"])
+
+        # Make the master 60% wide
+        try:
+            sway_cmd([f"[con_id={master_id}] resize set width 60 ppt"])
+        except Exception:
+            pass
+
+        sway_cmd([f"[con_id={master_id}] focus"])
+        notify("󰞖 Layout", f"Master + stack ({n} windows)")
+        return
+
+    if pattern == "grid":
+        # Grid: work out the best number of columns and rows
+        num_cols = math.ceil(math.sqrt(n))
+        columns = [[] for _ in range(num_cols)]
+        for i, wid in enumerate(win_ids):
+            columns[i % num_cols].append(wid)
+
+        columns = [c for c in columns if c]
+        actual_cols = len(columns)
+
+        for wid in win_ids:
+            sway_cmd([f"[con_id={wid}] move to workspace {temp_ws}"])
+
+        sway_cmd([f"workspace {ws_name}"])
+        sway_cmd(["layout splith"])
+
+        # 1. Place each column's first window side by side
+        leaders = [col[0] for col in columns]
+        sway_cmd([f"[con_id={leaders[0]}] move to workspace {ws_name}"])
+        for i in range(1, actual_cols):
+            sway_cmd([f"[con_id={leaders[i - 1]}] focus"])
+            sway_cmd(["split h"])
+            sway_cmd([f"[con_id={leaders[i]}] move to workspace {ws_name}"])
+
+        # 2. Add the rest of each column below it
+        for col in columns:
+            if len(col) > 1:
+                for j in range(1, len(col)):
+                    above_id = col[j - 1]
+                    curr_id = col[j]
+                    sway_cmd([f"[con_id={above_id}] focus"])
+                    sway_cmd(["split v"])
+                    sway_cmd([f"[con_id={curr_id}] move to workspace {ws_name}"])
+
+        sway_cmd([f"[con_id={win_ids[0]}] focus"])
+        notify("󰞖 Layout", f"Grid ({actual_cols}x{math.ceil(n / actual_cols)} · {n} windows)")
+        return
+
+def show_menu():
+    options = [
+        "󰕰  Smart grid (2x2 / 3x3)                [Ctrl+Alt+y]",
+        "󰊗  Master + stack (60% / rest)           [Ctrl+Alt+u]",
+        "󰆧  Columns                                [Ctrl+Alt+i]",
+        "󰯃  Rows                                   [Ctrl+Alt+o]",
+        "󰞖  Tabbed                                 [Ctrl+Alt+w]",
+    ]
+
+    subprocess.run(["pkill", "-x", "wofi"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    p = subprocess.Popen(
+        ["wofi", "--dmenu", "-i", "-p", "󰞖 Window layout:"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True
+    )
+    chosen, _ = p.communicate(input="\n".join(options))
+    chosen = chosen.strip()
+    if not chosen:
+        return
+
+    if "Smart grid" in chosen:
+        apply_layout("grid")
+    elif "Master" in chosen:
+        apply_layout("master")
+    elif "Columns" in chosen:
+        apply_layout("columns")
+    elif "Rows" in chosen:
+        apply_layout("rows")
+    elif "Tabbed" in chosen:
+        apply_layout("tabbed")
+
+def main():
+    if len(sys.argv) > 1:
+        action = sys.argv[1].lower()
+        if action == "grid":
+            apply_layout("grid")
+        elif action == "master":
+            apply_layout("master")
+        elif action == "columns":
+            apply_layout("columns")
+        elif action == "rows":
+            apply_layout("rows")
+        elif action == "tabbed":
+            apply_layout("tabbed")
+        elif action in ("menu", "picker"):
+            show_menu()
+        else:
+            show_menu()
+    else:
+        show_menu()
+
+if __name__ == "__main__":
+    main()

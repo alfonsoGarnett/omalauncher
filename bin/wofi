@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Wrapper ensuring Wofi runs on Wayland layer-shell protocol
+unset WAYLAND_SOCKET
+export GDK_BACKEND=wayland
+if [ -z "$WAYLAND_DISPLAY" ]; then
+    if [ -S /run/user/0/wayland-1 ]; then
+        export WAYLAND_DISPLAY=wayland-1
+    else
+        export WAYLAND_DISPLAY=wayland-0
+    fi
+fi
+exec /usr/bin/wofi "$@"
