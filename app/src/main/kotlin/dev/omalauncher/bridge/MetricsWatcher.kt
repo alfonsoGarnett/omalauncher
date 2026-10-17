@@ -28,19 +28,20 @@ class MetricsWatcher(
 ) {
     private var job: Job? = null
     private var isScreenActive = true
+    private var lastRxTotal = 0L
+    private var lastTxTotal = 0L
+    private var lastSampleTimeMs = 0L
 
     fun start() {
         if (job != null) return
         job = scope.launch(Dispatchers.IO) {
             while (isActive) {
-                if (isScreenActive) {
-                    try {
-                        exportMetrics()
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Error gathering metrics", e)
-                    }
+                try {
+                    exportMetrics()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error gathering metrics", e)
                 }
-                delay(2500)
+                delay(1500)
             }
         }
     }
@@ -58,18 +59,47 @@ class MetricsWatcher(
         isScreenActive = false
     }
 
+    private fun formatSpeed(bytesPerSec: Long): String {
+        return when {
+            bytesPerSec >= 1024 * 1024 -> "%.1f MB/s".format(java.util.Locale.ROOT, bytesPerSec / (1024.0 * 1024.0))
+            bytesPerSec >= 1024 -> "%.1f KB/s".format(java.util.Locale.ROOT, bytesPerSec / 1024.0)
+            else -> "$bytesPerSec B/s"
+        }
+    }
+
     private fun exportMetrics() {
         val root = JSONObject()
         root.put("timestamp", System.currentTimeMillis() / 1000)
 
-        // 1. Network Traffic
+        // 1. Network Traffic & Speeds
         val net = JSONObject()
         val rxTotal = TrafficStats.getTotalRxBytes()
         val txTotal = TrafficStats.getTotalTxBytes()
+        val rx = if (rxTotal != TrafficStats.UNSUPPORTED.toLong()) rxTotal else 0L
+        val tx = if (txTotal != TrafficStats.UNSUPPORTED.toLong()) txTotal else 0L
+        val nowMs = android.os.SystemClock.elapsedRealtime()
+
+        var rxRate = 0L
+        var txRate = 0L
+        if (lastSampleTimeMs > 0 && nowMs > lastSampleTimeMs) {
+            val dt = (nowMs - lastSampleTimeMs) / 1000.0
+            if (dt > 0.1 && rx >= lastRxTotal && tx >= lastTxTotal) {
+                rxRate = ((rx - lastRxTotal) / dt).toLong()
+                txRate = ((tx - lastTxTotal) / dt).toLong()
+            }
+        }
+        lastRxTotal = rx
+        lastTxTotal = tx
+        lastSampleTimeMs = nowMs
+
         val rxMobile = TrafficStats.getMobileRxBytes()
         val txMobile = TrafficStats.getMobileTxBytes()
-        net.put("rx_bytes", if (rxTotal != TrafficStats.UNSUPPORTED.toLong()) rxTotal else 0L)
-        net.put("tx_bytes", if (txTotal != TrafficStats.UNSUPPORTED.toLong()) txTotal else 0L)
+        net.put("rx_bytes", rx)
+        net.put("tx_bytes", tx)
+        net.put("rx_rate_bytes_per_sec", rxRate)
+        net.put("tx_rate_bytes_per_sec", txRate)
+        net.put("rx_speed_human", formatSpeed(rxRate))
+        net.put("tx_speed_human", formatSpeed(txRate))
         net.put("rx_mobile_bytes", if (rxMobile != TrafficStats.UNSUPPORTED.toLong()) rxMobile else 0L)
         net.put("tx_mobile_bytes", if (txMobile != TrafficStats.UNSUPPORTED.toLong()) txMobile else 0L)
         root.put("network", net)
