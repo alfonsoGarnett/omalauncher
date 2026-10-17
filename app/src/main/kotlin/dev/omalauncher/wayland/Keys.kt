@@ -10,6 +10,15 @@ object Keys {
     const val KEY_EQUAL = 13
     const val KEY_LEFTCTRL = 29
     const val KEY_LEFTALT = 56
+    const val KEY_RIGHTALT = 100
+    const val KEY_HOME = 102
+    const val KEY_UP = 103
+    const val KEY_PAGEUP = 104
+    const val KEY_LEFT = 105
+    const val KEY_RIGHT = 106
+    const val KEY_END = 107
+    const val KEY_DOWN = 108
+    const val KEY_PAGEDOWN = 109
     const val KEY_INSERT = 110
 
     private val byKeyCode =
