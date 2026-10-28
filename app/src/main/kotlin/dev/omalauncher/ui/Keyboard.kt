@@ -76,6 +76,9 @@ class KeyboardBridge(
         event: KeyEvent,
         code: Int,
     ) {
+        // Android's Caps Lock state rides on every key, also the ones that stop here.
+        val capsLock = event.isCapsLockOn
+        wm.server.postInput { syncCapsLock(capsLock) }
         if (event.action == KeyEvent.ACTION_UP && code == swallowUp) {
             swallowUp = null
             return
@@ -90,14 +93,14 @@ class KeyboardBridge(
         // Key repeat is ours (clients get rate 0): replay Android's repeats as release + press.
         if (event.repeatCount > 0) {
             if (event.action == KeyEvent.ACTION_DOWN) {
-                key(code, false)
-                key(code, true)
+                key(code, false, capsLock)
+                key(code, true, capsLock)
             }
             return
         }
         when (event.action) {
-            KeyEvent.ACTION_DOWN -> key(code, true)
-            KeyEvent.ACTION_UP -> key(code, false)
+            KeyEvent.ACTION_DOWN -> key(code, true, capsLock)
+            KeyEvent.ACTION_UP -> key(code, false, capsLock)
         }
     }
 
@@ -237,6 +240,7 @@ class KeyboardBridge(
     private fun key(
         code: Int,
         pressed: Boolean,
+        capsLock: Boolean? = null,
     ) {
         if (pressed) {
             down += code
@@ -244,7 +248,7 @@ class KeyboardBridge(
             down -= code
             implied -= code
         }
-        wm.server.postInput { key(code, pressed) }
+        wm.server.postInput { key(code, pressed, capsLock) }
     }
 }
 
