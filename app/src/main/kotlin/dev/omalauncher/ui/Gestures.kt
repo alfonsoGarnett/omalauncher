@@ -3,6 +3,7 @@ package dev.omalauncher.ui
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import android.content.Context
+import android.util.Log
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
@@ -44,10 +45,11 @@ import androidx.compose.ui.unit.Velocity
 
 /**
  * What swiping up and swiping down on home open, kept in style.toml so agents can set them too: the file name of a
- * panel (`panel "…" { }`; swiping up opens drawer.owl, the app drawer, by default), or "none".
+ * panel (`panel "…" { }`; swiping up opens drawer.owl, the app drawer, by default), "none", or for swiping down
+ * "notifications", Android's notification shade.
  */
 class Gestures(
-    context: Context,
+    private val context: Context,
     private val style: StyleStore,
 ) {
     /** drawer.owl by default: the app drawer, like stock launchers, written in owl. Saved as it's set. */
@@ -55,7 +57,7 @@ class Gestures(
         get() = LauncherStyle.style[Style.SWIPE_UP]
         set(choice) = style.update { it.with(Style.SWIPE_UP, choice) }
 
-    /** Nothing by default. Saved as it's set. */
+    /** The notifications by default (moved over from preferences, see init). Saved as it's set. */
     var swipeDown: String
         get() = LauncherStyle.style[Style.SWIPE_DOWN]
         set(choice) = style.update { it.with(Style.SWIPE_DOWN, choice) }
@@ -65,23 +67,38 @@ class Gestures(
         val prefs = LauncherData.prefs(context)
         if (!prefs.getBoolean(MOVED, false)) {
             if (prefs.getString(OLD_SWIPE_UP, null) == NONE) swipeUp = NONE
+            // The fork's swipe down opened the notifications unless set to something else.
+            if (prefs.getString(OLD_SWIPE_DOWN, NOTIFICATIONS) == NOTIFICATIONS) swipeDown = NOTIFICATIONS
             prefs.edit().putBoolean(MOVED, true).apply()
+        }
+    }
+
+    /** Expands the status bar's notification panel, through StatusBarManager's hidden method. */
+    fun openNotifications() {
+        try {
+            val service = context.getSystemService("statusbar")
+            Class.forName("android.app.StatusBarManager").getMethod("expandNotificationsPanel").invoke(service)
+        } catch (e: Exception) {
+            Log.w(TAG, "Cannot expand notifications panel", e)
         }
     }
 
     companion object {
         const val NONE = "none"
+        const val NOTIFICATIONS = "notifications"
+        private const val TAG = "Gestures"
         private const val OLD_SWIPE_UP = "gesture_swipe_up"
+        private const val OLD_SWIPE_DOWN = "gesture_swipe_down"
         private const val MOVED = "gestures_in_style"
     }
 }
 
 /** The panel [choice] names, if it's one that runs; null for nothing, and a panel that's gone or broken. */
-internal fun Runtime.panelOf(choice: String) = choice.takeIf { it != Gestures.NONE }?.takeIf { widgets.panelInstance(it) != null }
+internal fun Runtime.panelOf(choice: String) = choice.takeIf { it != Gestures.NONE && it != Gestures.NOTIFICATIONS }?.takeIf { widgets.panelInstance(it) != null }
 
 /** What [choice] is called in settings: nothing, or the panel's name (its file's, while it has none). */
 internal fun Runtime.gestureLabel(choice: String) =
-    if (choice == Gestures.NONE) "nothing" else widgets.panels().firstOrNull { it.file.name == choice }?.name ?: choice.removeSuffix(".owl")
+    if (choice == Gestures.NONE) "nothing" else if (choice == Gestures.NOTIFICATIONS) "notifications" else widgets.panels().firstOrNull { it.file.name == choice }?.name ?: choice.removeSuffix(".owl")
 
 /**
  * Picked panels that don't compile, drawer.owl and keybar.owl, for home's error banner: without a tile, nothing else would say so,
@@ -158,6 +175,10 @@ internal fun Modifier.homeSwipe(
                         when {
                             state.drawer.value > 0f -> HomeDrag.Drawer
                             dy < 0f && gestures.swipeUp != Gestures.NONE -> HomeDrag.Drawer
+                            dy > 0f && gestures.swipeDown == Gestures.NOTIFICATIONS -> {
+                                gestures.openNotifications()
+                                HomeDrag.Ignored
+                            }
                             // Picked as the drag starts: it comes down from out of sight above with the finger.
                             dy > 0f -> runtime.panelOf(gestures.swipeDown)?.let { name -> state.pulled = name; HomeDrag.Pull } ?: HomeDrag.Ignored
                             else -> HomeDrag.Ignored
@@ -248,7 +269,7 @@ fun GesturesScreen(
         GestureRow("swipe up", panels + listOf(Gestures.NONE to "nothing"), gestures.swipeUp) { gestures.swipeUp = it }
         EditPanel(runtime, gestures.swipeUp, onAgent)
         Spacer(Modifier.height(8.dp))
-        GestureRow("swipe down", listOf(Gestures.NONE to "nothing") + panels, gestures.swipeDown) { gestures.swipeDown = it }
+        GestureRow("swipe down", listOf(Gestures.NONE to "nothing", Gestures.NOTIFICATIONS to "notifications") + panels, gestures.swipeDown) { gestures.swipeDown = it }
         EditPanel(runtime, gestures.swipeDown, onAgent)
         BasicText(
             "panels are owl files, the drawer among them: edit them like widgets, or create one with your agent from home's menu. " +
