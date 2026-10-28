@@ -1,0 +1,26 @@
+#!/bin/bash
+# mouse-status: print the launcher's mouse.conf settings as JSON, with the defaults for any that aren't set.
+CONF="${HOME:-/root}/.config/omalauncher/mouse.conf"
+
+ptr=1.0
+scrl=1.0
+nat=0
+
+if [ -f "$CONF" ]; then
+    while IFS='=' read -r k v; do
+        k=$(echo "$k" | tr -d ' ' | tr '[:upper:]' '[:lower:]')
+        v=$(echo "$v" | tr -d ' ')
+        case "$k" in
+            pointer_speed|speed) ptr="$v" ;;
+            scroll_speed|scroll) scrl="$v" ;;
+            natural_scroll|natural) nat="$v" ;;
+        esac
+    done < <(grep -v '^#' "$CONF" | grep '=')
+fi
+
+# Empty values fall back to the defaults
+ptr=${ptr:-1.0}
+scrl=${scrl:-1.0}
+nat=${nat:-0}
+
+printf '{"pointer_speed":%s,"scroll_speed":%s,"natural_scroll":%s}\n' "$ptr" "$scrl" "$nat"

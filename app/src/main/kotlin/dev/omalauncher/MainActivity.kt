@@ -9,7 +9,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.derivedStateOf
 import android.util.Log
+import android.view.InputDevice
 import android.view.KeyEvent
+import android.view.MotionEvent
+import dev.omalauncher.wayland.AXIS_SOURCE_WHEEL
+import kotlin.math.roundToInt
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.lifecycle.lifecycleScope
@@ -189,6 +193,23 @@ class MainActivity : ComponentActivity() {
             if (keysStartAgain(window.decorView) || !keysFocused(window.decorView) && state.focusHome()) return true
         }
         return super.dispatchKeyEvent(event) || escapeAsBack(event)
+    }
+
+    override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
+        if (event.isFromSource(InputDevice.SOURCE_CLASS_POINTER)) {
+            if (event.action == MotionEvent.ACTION_SCROLL) {
+                val vScroll = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
+                val hScroll = event.getAxisValue(MotionEvent.AXIS_HSCROLL)
+                if (vScroll != 0f || hScroll != 0f) {
+                    val dy = -vScroll * 15f
+                    val dx = -hScroll * 15f
+                    val steps = (-vScroll).roundToInt()
+                    runtime.wm.scroll(dx, dy, AXIS_SOURCE_WHEEL, steps)
+                    return true
+                }
+            }
+        }
+        return super.dispatchGenericMotionEvent(event)
     }
 
     /** Widgets only refresh while the home screen is visible. */

@@ -91,4 +91,20 @@ object Icons {
 
     /** Points up; rotate it for the other arrow keys. */
     val Chevron by lazy { icon("chevron", "M7.41,15.41L12,10.83l4.59,4.58L18,14l-6,-6 -6,6z") }
+
+    /** Modern flat crosshair/target icon for Pointer Captured */
+    val PointerCaptured by lazy {
+        icon(
+            "pointer_captured",
+            "M12,2C6.48,2 2,6.48 2,12s4.48,10 10,10 10,-4.48 10,-10S17.52,2 12,2zm0,18c-4.42,0 -8,-3.58 -8,-8s3.58,-8 8,-8 8,3.58 8,8 -3.58,8 -8,8zm-1,-17h2v4h-2zm0,14h2v4h-2zm7,-8h4v2h-4zm-14,0h4v2H4zm8,5c1.66,0 3,-1.34 3,-3s-1.34,-3 -3,-3 -3,1.34 -3,3 1.34,3 3,3z",
+        )
+    }
+
+    /** Modern flat mouse pointer arrow for Pointer Free */
+    val PointerFree by lazy {
+        icon(
+            "pointer_free",
+            "M13.64,21.97c-0.5,0.24 -1.1,0.05 -1.36,-0.45l-2.44,-4.94 -3.4,3.4c-0.32,0.32 -0.86,0.1 -0.86,-0.36V3.42c0,-0.46 0.54,-0.68 0.86,-0.36l11.98,11.98c0.32,0.32 0.1,0.86 -0.36,0.86h-4.22l2.44,4.94c0.24,0.5 0.05,1.1 -0.45,1.34l-2.19,-0.21z",
+        )
+    }
 }

@@ -17,6 +17,7 @@ internal const val MOD_LOCK = 2
 private const val MOD_CTRL = 4
 private const val MOD_ALT = 8
 private const val MOD_SUPER = 64
+private const val MOD_MOD5 = 128
 
 /** Seat state: pointer and keyboard focus. All methods must be called with the server locked. */
 class Input(
@@ -173,7 +174,8 @@ class Input(
 
     private fun modifierBit(code: Int) =
         when (code) {
-            42, 54 -> MOD_SHIFT
+            42 -> MOD_SHIFT
+            54 -> MOD_MOD5
             58 -> MOD_LOCK
             29, 97 -> MOD_CTRL
             56, 100 -> MOD_ALT
@@ -233,6 +235,9 @@ class Input(
         source: Int,
         steps: Int = 0,
     ) {
+        if (pointerFocus == null && keyboardFocus != null) {
+            pointerMotion(keyboardFocus, 0f, 0f)
+        }
         val s = pointerFocus ?: return
         val time = now()
         pointersOf(s.client).forEach { p ->
