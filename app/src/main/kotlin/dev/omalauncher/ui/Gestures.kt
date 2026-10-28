@@ -5,6 +5,7 @@ import androidx.compose.runtime.setValue
 import android.content.Context
 import android.util.Log
 import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Box
@@ -38,6 +39,10 @@ import dev.omalauncher.widgets.WidgetEngine
 import dev.omalauncher.widgets.WidgetSpec
 import dev.omalauncher.widgets.editWidgetCommand
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -203,6 +208,43 @@ internal fun Modifier.homeSwipe(
             drag.kind = HomeDrag.Undecided
         },
     )
+}
+
+/**
+ * Pinching in with two fingers on home calls [onPinch] once per gesture: the fingers have come 55dp closer and are at
+ * most 82% as far apart as they started. It looks on the way in, before the pages or a tile take the touches.
+ */
+@Composable
+internal fun Modifier.homePinch(
+    enabled: Boolean = true,
+    onPinch: () -> Unit,
+): Modifier {
+    val haptics = LocalHapticFeedback.current
+    val minDelta = with(LocalDensity.current) { 55.dp.toPx() }
+    return pointerInput(enabled) {
+        if (!enabled) return@pointerInput
+        awaitEachGesture {
+            var start = -1f
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                val pressed = event.changes.filter { it.pressed }
+                if (pressed.isEmpty()) break
+                if (pressed.size < 2) {
+                    start = -1f
+                    continue
+                }
+                val distance = (pressed[0].position - pressed[1].position).getDistance()
+                if (start < 0f) {
+                    start = distance
+                } else if (start - distance > minDelta && distance / start < 0.82f) {
+                    event.changes.forEach { it.consume() }
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onPinch()
+                    break
+                }
+            }
+        }
+    }
 }
 
 /**
