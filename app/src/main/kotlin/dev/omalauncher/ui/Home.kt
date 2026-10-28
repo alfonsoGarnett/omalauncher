@@ -316,6 +316,8 @@ fun HomeScreen(
     Column(
         Modifier
             .fillMaxSize()
+            // Pinching home opens settings › pages, to arrange them; not while editing, in a folder or typing in a tile.
+            .homePinch(enabled = !terminals.typing && state.editing == null && arrange.folder == null) { state.show(SettingsPage.Pages) }
             // Swiping up opens the drawer, like stock launchers, or what gesture settings say; not while editing, in a
             // folder or typing in a tile. A long-press drag takes its touches first, and the pager only wants sideways ones.
             .homeSwipe(runtime, state, enabled = !terminals.typing && state.editing == null && arrange.folder == null)
