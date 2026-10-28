@@ -22,17 +22,37 @@ is logged to ~/.local/share/adb-admin/log.jsonl with the command that undoes it.
   adb-admin dns off|auto|HOST
   adb-admin anim SCALE
   adb-admin density N|reset
+  adb-admin size WxH|reset              screen resolution (wm size)
+  adb-admin rotate on|off               auto-rotate; off also locks the screen upright
+  adb-admin stock                       resolution, density, font size and animations back to stock (undoable)
   adb-admin toggle wifi|bt|data|airplane on|off
   adb-admin default ROLE PKG            browser dialer sms home assistant
   adb-admin killall | shot | record SECS | reboot system|recovery|bootloader
   adb-admin install PATH | extract PKG | export NAME | import NAME | grantwss
+
+  adb-admin --watch COMMAND...          the same commands on the Wear OS watch found by watch-link,
+                                        with its own reports (~/.cache/adb-admin/watch) and undo log, plus:
+  adb-admin --watch input TEXT          type text into the focused field on the watch
+  adb-admin --watch key back|home|wake|sleep|power
+  adb-admin --watch launch PKG          open an app on the watch
+  adb-admin --watch buzz                vibrate the watch to find it
+  adb-admin --watch swipe up|down|left|right   the finger moves that way (up scrolls a list down)
+  adb-admin --watch bezel N             turn the rotating bezel N steps (negative: counter-clockwise)
+  adb-admin --watch tap X Y             tap at screen pixels
+  adb-admin --watch face COMPONENT      set the watch face (report faces lists them)
+  adb-admin --watch push PATH           copy a file to the watch (audio to Music, the rest to Download)
+  adb-admin --watch wifi on|auto|off    the watch's Wi-Fi mode; on also turns off automatic Wi-Fi
+                                        (developer option) so the link stays up
 """
 import json, os, re, subprocess, sys, time, glob
 
+WATCH = len(sys.argv) > 1 and sys.argv[1] == "--watch"
+if WATCH:
+    del sys.argv[1]
 SERIAL = os.environ.get("ADB_SERIAL", "127.0.0.1:5556")
 HOME = os.path.expanduser("~")
-CACHE = os.path.join(HOME, ".cache/adb-admin")
-DATA = os.path.join(HOME, ".local/share/adb-admin")
+CACHE = os.path.join(HOME, ".cache/adb-admin/watch" if WATCH else ".cache/adb-admin")
+DATA = os.path.join(HOME, ".local/share/adb-admin/watch" if WATCH else ".local/share/adb-admin")
 LOG = os.path.join(DATA, "log.jsonl")
 LAUNCHER = "dev.omalauncher.mod"
 PKG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._]*$")
@@ -187,6 +207,88 @@ PRESET_TITLES = {"samsung": "Samsung bloat", "facebook": "Facebook stubs", "goog
                  "carrier": "Carrier, Microsoft, Amazon & OTA", "languages": "Unused language packs"}
 KEEP_LANGS = ("es", "en")
 
+# The watch (Wear OS): freezing these can bootloop it, break pairing with the phone or cut this link.
+WATCH_PROTECTED = {
+    "android", "com.android.shell", "com.android.settings", "com.android.phone", "com.android.bluetooth",
+    "com.android.nfc", "com.android.se", "com.android.providers.settings", "com.android.providers.media",
+    "com.android.providers.media.module", "com.android.providers.telephony", "com.android.providers.contacts",
+    "com.android.server.telecom", "com.android.networkstack", "com.android.networkstack.tethering",
+    "com.android.wifi.resources", "com.android.connectivity.resources", "com.android.location.fused",
+    "com.android.keychain", "com.android.intentresolver", "com.android.inputdevices", "com.android.vending",
+    "com.google.android.gms", "com.google.android.gsf", "com.google.android.packageinstaller",
+    "com.google.android.permissioncontroller", "com.google.android.ext.services", "com.google.android.ext.shared",
+    "com.google.android.wearable.app", "com.google.wear.services", "com.google.android.apps.wearable.systemui",
+    "com.google.android.apps.wearable.settings", "com.google.android.wearable.frameworkpackagestubs",
+    "com.google.android.wearable.healthservices", "com.google.android.wearable.protolayout.renderer",
+    "com.google.android.clockwork.refsysui.default", "com.samsung.android.wearable.sysui",
+    "com.samsung.android.wearable.media.sessions", "com.samsung.android.wcs.extension",
+    "com.samsung.android.clientconnection", "com.samsung.android.secondconnection", "com.samsung.android.mcfds",
+    "com.samsung.android.honeyboard", "com.samsung.android.providers.contacts", "com.samsung.android.nfc",
+    "com.samsung.android.ese", "com.samsung.android.networkstack", "com.samsung.android.service.health",
+    "com.samsung.android.wear.shealth", "com.samsung.android.location", "com.samsung.android.wearable.samsungaccount",
+    "com.samsung.wear.watchface.runtime", "com.samsung.android.watch.watchface.companionhelper",
+    "com.samsung.android.watch.watchface.complicationhelper", "com.samsung.android.watch.watchface.emergency",
+    "com.samsung.android.watch.findmywatch", "com.samsung.android.watch.safety_assistance",
+    "com.samsung.euicc", "com.samsung.euicc.wmservice", "com.sec.imsservice", "com.sec.phone",
+    "com.sec.android.app.bluetoothagent", "com.wssyncmldm",
+}
+WATCH_NAMES = {
+    "com.samsung.android.wear.shealth": "Samsung Health", "com.samsung.android.watch.watchface.companionhelper": "Watch face helper",
+    "com.google.android.apps.wearable.retailattractloop": "Store demo mode", "com.samsung.android.watch.runestone.app": "Personalization (Runestone)",
+    "com.samsung.android.intellivoiceservice": "Voice wake-up", "com.samsung.android.mdecservice": "Calls & messages on other devices",
+    "com.google.android.wearable.assistant": "Google Assistant", "com.samsung.android.wear.smartswitchassistant": "Smart Switch",
+}
+WATCH_PRESETS = {
+    "samsung": [
+        ("com.samsung.android.bixby.agent", "safe", "voice assistant"),
+        ("com.samsung.android.bixby.wakeup", "safe", "'Hi Bixby' detection"),
+        ("com.samsung.android.intellivoiceservice", "caution", "voice wake-up"),
+        ("com.samsung.android.watch.runestone.app", "safe", "on-device profiling"),
+        ("com.sec.android.diagmonagent", "safe", "telemetry"), ("com.samsung.android.dqagent", "safe", "telemetry"),
+        ("com.samsung.android.watch.selfdiagnostics", "safe", "diagnostics app"),
+        ("com.sec.android.easyMover", "safe", "only to move to a new watch"),
+        ("com.samsung.android.wear.smartswitchassistant", "safe", "only to move to a new watch"),
+        ("com.samsung.android.messagebackuprestore", "safe", "message backup"),
+        ("com.samsung.android.watch.cameracontroller", "safe", "phone camera remote"),
+        ("com.samsung.android.video.wearable", "caution", "video player"),
+        ("com.samsung.android.gallery.watch", "caution", "gallery"),
+        ("com.samsung.android.app.routines", "caution", "modes & routines"),
+        ("com.samsung.android.mdecservice", "caution", "calls/messages on other devices"),
+        ("com.samsung.android.mobileservice", "caution", "Samsung social services"),
+        ("com.samsung.android.scloud", "caution", "Samsung Cloud backup"),
+        ("com.sec.android.app.samsungapps", "caution", "Galaxy Store, updates Samsung apps"),
+        ("com.samsung.android.watch.siren", "caution", "emergency siren"),
+    ],
+    "google": [
+        ("com.google.android.apps.wearable.retailattractloop", "safe", "store demo mode"),
+        ("com.google.android.partnersetup", "safe", ""),
+        ("com.google.android.apps.maps", "caution", "Google Maps"),
+        ("com.google.android.apps.messaging", "caution", "Google Messages"),
+        ("com.google.android.wearable.assistant", "caution", "Google Assistant"),
+        ("com.google.android.marvin.talkback", "caution", "accessibility"),
+        ("com.google.android.tts", "caution", "text-to-speech"),
+    ],
+    "factory": [
+        ("com.sec.android.app.factorykeystring", "caution", "factory test tool"),
+        ("com.sec.android.app.hwmoduletest", "caution", "factory test tool"),
+        ("com.sec.android.app.wlantest", "caution", "factory test tool"),
+        ("com.sec.android.app.felicatest", "caution", "factory test tool"),
+        ("com.sec.nfc.felicalocktest", "caution", "factory test tool"),
+        ("com.sec.android.app.servicemodeapp", "caution", "service menu"),
+        ("com.sec.android.RilServiceModeApp", "caution", "service menu"),
+        ("com.sem.factoryapp", "caution", "factory test tool"),
+        ("com.sec.facatfunction", "caution", "factory test tool"),
+    ],
+    "faces": [
+        ("com.samsung.android.watch.watchface.*", "face", "stock watch face"),
+    ],
+}
+WATCH_PRESET_TITLES = {"samsung": "Samsung extras", "google": "Google extras", "factory": "Factory & service tools",
+                       "faces": "Unused stock watch faces"}
+if WATCH:
+    PROTECTED, PRESETS, PRESET_TITLES = WATCH_PROTECTED, WATCH_PRESETS, WATCH_PRESET_TITLES
+    NAMES.update(WATCH_NAMES)
+
 DANGEROUS = ["CAMERA", "RECORD_AUDIO", "ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION", "ACCESS_BACKGROUND_LOCATION",
              "READ_CONTACTS", "WRITE_CONTACTS", "GET_ACCOUNTS", "READ_CALENDAR", "WRITE_CALENDAR", "READ_SMS", "SEND_SMS",
              "RECEIVE_SMS", "READ_CALL_LOG", "WRITE_CALL_LOG", "CALL_PHONE", "READ_PHONE_STATE", "READ_PHONE_NUMBERS",
@@ -227,6 +329,15 @@ def sh(cmd, timeout=30):
 
 
 def connected():
+    if WATCH:
+        # The watch's address changes (DHCP, random TLS port): watch-link finds it.
+        global SERIAL
+        try:
+            r = subprocess.run(["watch-link", "addr"], capture_output=True, text=True, timeout=60)
+        except Exception:
+            return False
+        SERIAL = r.stdout.strip() or "watch"
+        return bool(r.stdout.strip())
     try:
         r = subprocess.run(["adb", "devices"], capture_output=True, text=True, timeout=5)
     except Exception:
@@ -242,7 +353,13 @@ def connected():
 
 def need():
     if not connected():
-        die(f"ADB not connected to {SERIAL}: enable Wireless debugging, then use the droid widget")
+        try:
+            paused = WATCH and json.load(open(os.path.join(HOME, ".cache/adb-admin/watch-link.json"))).get("paused")
+        except Exception:
+            paused = False
+        die("Watch link paused (battery saver): tap Resume" if paused else
+            "Watch not connected: turn on Wireless debugging on the watch, then Connect" if WATCH else
+            f"ADB not connected to {SERIAL}: enable Wireless debugging, then use the droid widget")
 
 
 def write(name, obj):
@@ -450,7 +567,7 @@ def do(action, ps):
             continue
         cmd, und = tmpl.format(p=p), undo.format(p=p) if undo else None
         if action == "remove" and p in system:
-            # Android 17 refuses per-user removal of system apps without root: freeze them instead.
+            # Android refuses per-user removal of system apps without root here: freeze them instead.
             cmd, und = f"pm disable-user --user 0 {p}", f"pm enable --user 0 {p}"
             froze.append(p)
         elif action == "remove":
@@ -483,7 +600,7 @@ def do(action, ps):
     removed = len(done) - len(froze)
     msg = f"{label} {removed} app{'s' if removed != 1 else ''}"
     if froze:
-        msg += f"; froze {len(froze)} system app{'s' if len(froze) != 1 else ''} (removing them needs root on Android 17)"
+        msg += f"; froze {len(froze)} system app{'s' if len(froze) != 1 else ''} (removing them needs root)"
     if store:
         msg += f"; no backup for {len(store)}, opened Play Store"
     if skipped:
@@ -641,7 +758,13 @@ def preset_items(name, apps):
     by = {a["p"]: a for a in apps}
     items = []
     for pat, risk, note in PRESETS[name]:
-        if pat.endswith("*"):
+        if pat.endswith("*") and risk == "face":
+            cur = current_face().split("/")[0]
+            for p in sorted(by):
+                if p.startswith(pat[:-1]) and p not in PROTECTED:
+                    items.append({"p": p, "n": name_of(p), "risk": "caution" if p == cur else "safe",
+                                  "note": "the face in use" if p == cur else note, "st": by[p]["st"]})
+        elif pat.endswith("*"):
             for p in sorted(by):
                 if p.startswith(pat[:-1]):
                     keep = lang_keep(p)
@@ -702,6 +825,8 @@ def report(kind):
     if kind == "presets":
         presets_report()
         return out("ok")
+    if kind == "faces":
+        return faces_report()
     need()
     now = int(time.time())
     if kind == "audit":
@@ -738,6 +863,10 @@ def report(kind):
                 items.append({"p": uid_name(m.group(1), um), "mah": float(m.group(2))})
                 if len(items) >= 25:
                     break
+        if not drain:
+            # Wear OS doesn't estimate per-app use: report the measured discharge since charging.
+            d = re.search(r"^\s+Discharge: ([\d.]+) mAh", o, re.M)
+            drain = float(d.group(1)) if d else drain
         tot = sum(i["mah"] for i in items) or 1
         for i in items:
             i["n"] = name_of(i["p"]) if PKG_RE.match(i["p"]) and "." in i["p"] else i["p"]
@@ -755,7 +884,8 @@ def report(kind):
         prot = protected()
         o = sh("dumpsys meminfo", timeout=60)
         items = []
-        blk = o.split("Total PSS by process:", 1)
+        # Phones list PSS; Wear OS lists RSS.
+        blk = re.split(r"Total (?:PSS|RSS) by process:", o, maxsplit=1)
         if len(blk) > 1:
             for l in blk[1].splitlines()[1:]:
                 m = re.match(r"\s+([\d,]+)K: (\S+) \(pid (\d+)", l)
@@ -934,6 +1064,8 @@ def set_setting(ns, key, val, label=None, batch=None):
 
 
 def status():
+    if WATCH:
+        return watch_status()
     if not connected():
         out({"ok": False, "serial": SERIAL})
         return
@@ -947,7 +1079,8 @@ def status():
             "cmd role get-role-holders android.app.role.HOME", "cmd role get-role-holders android.app.role.SMS",
             "cmd role get-role-holders android.app.role.DIALER", "cmd role get-role-holders android.app.role.ASSISTANT",
             "dumpsys thermalservice | grep 'Thermal Status'", "cat /proc/loadavg",
-            f"pm list packages --user 0 -U {LAUNCHER} >/dev/null; dumpsys package {LAUNCHER} | grep -c 'WRITE_SECURE_SETTINGS: granted=true'"]
+            f"pm list packages --user 0 -U {LAUNCHER} >/dev/null; dumpsys package {LAUNCHER} | grep -c 'WRITE_SECURE_SETTINGS: granted=true'",
+            "settings get system accelerometer_rotation"]
     o = sh(f"; echo {marker}; ".join(keys), timeout=20).split(marker)
     v = [x.strip() for x in o] + [""] * (len(keys) - len(o))
     dens = re.findall(r"(\d+)", v[10])
@@ -961,7 +1094,7 @@ def status():
          "refresh": v[14], "roles": {"browser": v[15], "home": v[16], "sms": v[17], "dialer": v[18], "assistant": v[19]},
          "roleNames": {k: name_of(x) if PKG_RE.match(x) else "" for k, x in (("browser", v[15]), ("home", v[16]), ("sms", v[17]), ("dialer", v[18]), ("assistant", v[19]))},
          "thermal": int((re.findall(r"\d+", v[20]) or [0])[0]), "load": (v[21].split() or ["?"])[0],
-         "wss": v[22].strip().endswith("1"), "undo": sum(1 for e in es if not e.get("undone") and e.get("undo"))})
+         "wss": v[22].strip().endswith("1"), "rotate": v[23].split()[:1] == ["1"], "undo": sum(1 for e in es if not e.get("undone") and e.get("undo"))})
 
 
 def dns(arg):
@@ -1001,6 +1134,60 @@ def density(arg):
     log(new_batch(), f"Density {arg}", None, [undo])
     write_log_report()
     out("density " + arg)
+
+
+def size(arg):
+    """Screen resolution (wm size), with undo. Keeps the aspect ratio check loose: WxH or reset."""
+    need()
+    if arg != "reset" and not re.match(r"^\d{3,4}x\d{3,4}$", arg):
+        die("bad size: use WIDTHxHEIGHT or reset")
+    cur = re.findall(r"(\d+x\d+)", sh("wm size"))
+    undo = f"wm size {cur[-1]}" if len(cur) > 1 else "wm size reset"
+    sh(f"wm size {arg}")
+    log(new_batch(), f"Resolution {arg}", None, [undo])
+    write_log_report()
+    out("resolution " + arg)
+
+
+def stock():
+    """Resolution, density, font size and animations back to stock, as one undoable batch."""
+    need()
+    size_now = re.findall(r"(\d+x\d+)", sh("wm size"))
+    dens_now = re.findall(r"(\d+)", sh("wm density"))
+    undo = []
+    if len(size_now) > 1:
+        undo.append(f"wm size {size_now[-1]}")
+    if len(dens_now) > 1:
+        undo.append(f"wm density {dens_now[-1]}")
+    font = settings_get("system", "font_scale")
+    if font not in (None, "1.0", "1"):
+        undo.append(f"settings put system font_scale {font}")
+    for k in ("window_animation_scale", "transition_animation_scale", "animator_duration_scale"):
+        v = settings_get("global", k)
+        if v not in (None, "1.0", "1"):
+            undo.append(f"settings put global {k} {v}")
+    sh("wm size reset; wm density reset; settings put system font_scale 1.0; "
+       "settings put global window_animation_scale 1.0; settings put global transition_animation_scale 1.0; "
+       "settings put global animator_duration_scale 1.0")
+    if undo:
+        log(new_batch(), "Display back to stock", None, undo)
+        write_log_report()
+    out("display back to stock" if undo else "already stock")
+
+
+def rotate(on):
+    """Auto-rotate on, or off and locked upright (the setting alone doesn't stop a free rotation mode)."""
+    need()
+    if on not in ("on", "off"):
+        die("rotate on or off")
+    if on == "on":
+        sh("settings put system accelerometer_rotation 1; cmd window user-rotation free")
+        log(new_batch(), "Auto-rotate on", None, ["settings put system accelerometer_rotation 0", "cmd window user-rotation lock 0"])
+    else:
+        sh("settings put system accelerometer_rotation 0; cmd window user-rotation lock 0")
+        log(new_batch(), "Auto-rotate off", None, ["settings put system accelerometer_rotation 1", "cmd window user-rotation free"])
+    write_log_report()
+    out("auto-rotate " + on)
 
 
 def toggle(what, on):
@@ -1135,6 +1322,193 @@ def grantwss():
     out(r.splitlines()[-1][:120] if r else "omalauncher can now change secure settings without ADB")
 
 
+# ---------- watch ----------
+
+def current_face():
+    m = re.search(r"mWallpaperComponent=ComponentInfo\{([^}]+)\}", sh("dumpsys wallpaper"))
+    return m.group(1) if m else ""
+
+
+def watch_status():
+    if not connected():
+        out({"ok": False, "serial": SERIAL})
+        return
+    marker = "@@"
+    keys = ["getprop ro.product.model", "getprop ro.build.version.release", "getprop ro.build.version.oneui",
+            "dumpsys battery", "settings get system clockwork_wifi_setting", "settings get global wifi_on",
+            "settings get global bluetooth_on", "settings get global airplane_mode_on", "settings get global theater_mode_on",
+            "settings get global ambient_enabled", "settings get system screen_off_timeout",
+            "settings get system screen_brightness", "settings get system screen_brightness_mode",
+            "settings get global animator_duration_scale", "wm density", "settings get system font_scale",
+            "settings get global stay_on_while_plugged_in", "settings get secure wake_gesture_enabled",
+            "settings get global ambient_touch_to_wake", "dumpsys nfc 2>/dev/null | grep -m1 mState=", "cat /proc/meminfo | head -3",
+            "df /data | tail -1", "cut -d' ' -f1 /proc/uptime", "dumpsys wallpaper 2>/dev/null | grep -m1 mWallpaperComponent",
+            "getprop ro.serialno", "getprop ro.cw_build.platform_mr", "wm size", "settings get system accelerometer_rotation",
+            "settings get global cw_disable_wifimediator"]
+    o = sh(f"; echo {marker}; ".join(keys), timeout=25).split(marker)
+    v = [x.strip() for x in o] + [""] * (len(keys) - len(o))
+    bat = v[3]
+    g = lambda k: (re.search(rf"^\s*{k}: (.+)$", bat, re.M) or [None, None])[1]
+    dens = re.findall(r"(\d+)", v[14])
+    mem = {l.split(":")[0]: int(re.findall(r"\d+", l)[0]) * 1024 for l in v[20].splitlines() if re.findall(r"\d+", l)}
+    df = v[21].split()
+    face = re.search(r"\{([^}]+)\}", v[23])
+    face = face.group(1) if face else ""
+    temp = g("temperature")
+    oneui = v[2]
+    es = log_entries()
+    out({"ok": True, "serial": SERIAL, "hw": v[24], "model": v[0], "android": v[1],
+         "oneui": f"{int(oneui) // 10000}.{int(oneui) // 100 % 100}" if oneui.isdigit() else "",
+         "battery": int(g("level") or 0), "temp": round(int(temp) / 10, 1) if temp and temp.lstrip("-").isdigit() else None,
+         "charging": any(g(k) == "true" for k in ("AC powered", "USB powered", "Wireless powered")),
+         "wifiMode": v[4] if v[4] in ("on", "auto", "off") else "auto", "wifi": v[5] == "1", "bt": v[6] == "1",
+         "airplane": v[7] == "1", "theater": v[8] == "1", "aod": v[9] == "1",
+         "timeout": int(v[10]) // 1000 if v[10].isdigit() else None,
+         "brightness": int(v[11]) if v[11].isdigit() else None, "autoBright": v[12] == "1",
+         "anim": v[13] if v[13] != "null" else "1.0",
+         "density": int(dens[-1]) if dens else None, "physDensity": int(dens[0]) if dens else None,
+         "size": (re.findall(r"(\d+x\d+)", v[26]) or [None])[-1], "physSize": (re.findall(r"(\d+x\d+)", v[26]) or [None])[0],
+         "font": v[15] if v[15] != "null" else "1.0", "stayOn": v[16] not in ("0", "null", ""),
+         "raise": v[17] == "1", "touchWake": v[18] == "1", "nfc": "on" in v[19].lower(),
+         "mem": {"total": mem.get("MemTotal"), "avail": mem.get("MemAvailable")},
+         "disk": {"total": int(df[1]) * 1024, "used": int(df[2]) * 1024} if len(df) > 3 and df[1].isdigit() else None,
+         "uptime": int(float(v[22])) if re.match(r"^[\d.]+$", v[22]) else None,
+         "rotate": v[27].split()[:1] == ["1"], "noAutoWifi": v[28].split()[:1] == ["1"], "face": face, "faceName": name_of(face.split("/")[0]) if face else "",
+         "undo": sum(1 for e in es if not e.get("undone") and e.get("undo"))})
+
+
+def faces_report():
+    need()
+    cur = current_face()
+    sysset = list_set("-s")
+    items = []
+    for l in sh("pm query-services --brief -a android.service.wallpaper.WallpaperService").splitlines():
+        l = l.strip()
+        if "/" not in l or " " in l:
+            continue
+        pkg, cls = l.split("/", 1)
+        comp = pkg + "/" + (pkg + cls if cls.startswith(".") else cls)
+        if pkg in ("com.google.android.apps.wearable.systemui",) or "DefaultWatchFace" in cls:
+            continue
+        items.append({"c": comp, "p": pkg, "n": name_of(pkg), "s": pkg in sysset, "on": comp == cur})
+    items.sort(key=lambda i: (not i["on"], i["s"], i["n"].lower()))
+    write("faces.json", {"t": int(time.time()), "current": cur, "items": items})
+    out(f"{len(items)} watch faces")
+
+
+def set_face(comp):
+    need()
+    if not re.match(r"^[A-Za-z0-9_.]+/[A-Za-z0-9_.$]+$", comp):
+        die("bad component")
+    prev = current_face()
+    r = sh(f"am broadcast -a com.google.android.wearable.app.DEBUG_SURFACE --es operation set-watchface --ecn component {comp}")
+    if "result=1" not in r:
+        die("the watch refused the face: " + (r.splitlines()[-1][:100] if r else "no answer"))
+    if prev and prev != comp:
+        log(new_batch(), "Watch face", comp.split("/")[0],
+            [f"am broadcast -a com.google.android.wearable.app.DEBUG_SURFACE --es operation set-watchface --ecn component {prev}"])
+        write_log_report()
+    faces_report_quiet()
+    out("watch face: " + name_of(comp.split("/")[0]))
+
+
+def faces_report_quiet():
+    import io, contextlib
+    with contextlib.redirect_stdout(io.StringIO()):
+        faces_report()
+
+
+KEYS = {"back": "KEYCODE_BACK", "home": "KEYCODE_HOME", "wake": "KEYCODE_WAKEUP", "sleep": "KEYCODE_SLEEP",
+        "power": "KEYCODE_POWER"}
+
+
+def watch_input(text):
+    need()
+    if not text or len(text) > 500:
+        die("nothing to type")
+    # input text takes %s for spaces; quote everything else for the device shell.
+    t = text.replace("%", "\\%").replace(" ", "%s")
+    sh("input text '" + t.replace("'", "'\\''") + "'")
+    out(f"typed {len(text)} characters")
+
+
+def watch_launch(p):
+    need()
+    if not PKG_RE.match(p):
+        die("bad package name")
+    r = sh(f"monkey -p {p} -c android.intent.category.LAUNCHER 1")
+    out(("opened " + name_of(p)) if "Events injected: 1" in r else f"{name_of(p)} has no launcher screen")
+
+
+def screen_size():
+    m = re.findall(r"(\d+)x(\d+)", sh("wm size"))
+    return (int(m[-1][0]), int(m[-1][1])) if m else (480, 480)
+
+
+def swipe(d):
+    need()
+    w, h = screen_size()
+    cx, cy = w // 2, h // 2
+    # Start inside the edges (edge swipes are system gestures: back, quick settings, notifications).
+    moves = {"up": (cx, int(h * 0.72), cx, int(h * 0.28)), "down": (cx, int(h * 0.28), cx, int(h * 0.72)),
+             "left": (int(w * 0.75), cy, int(w * 0.25), cy), "right": (int(w * 0.25), cy, int(w * 0.75), cy),
+             "fromtop": (cx, 2, cx, int(h * 0.7)), "frombottom": (cx, h - 2, cx, int(h * 0.3)),
+             "fromleft": (int(w * 0.1), cy, int(w * 0.85), cy)}
+    # One UI Watch panels open from the watch face: quick panel from the top, notifications to the right,
+    # apps from the bottom edge.
+    panels = {"quick": "fromtop", "notifications": "fromleft", "apps": "frombottom"}
+    if d not in moves and d not in panels:
+        die("swipe up, down, left, right, fromtop, frombottom, fromleft, quick, notifications or apps")
+    pre = "input keyevent KEYCODE_HOME; sleep 0.6; " if d in panels else ""
+    sh("input keyevent KEYCODE_WAKEUP; " + pre + "input swipe %d %d %d %d 220" % moves[panels.get(d, d)])
+    out("swipe " + d)
+
+
+def bezel(n):
+    need()
+    if not re.match(r"^-?\d{1,2}$", n):
+        die("bezel takes a number of steps")
+    sh(f"input rotaryencoder scroll --axis SCROLL,{-int(n)}")
+    out(f"bezel {n}")
+
+
+def tap(x, y):
+    need()
+    if not (x.isdigit() and y.isdigit()):
+        die("tap takes pixel coordinates")
+    sh(f"input tap {int(x)} {int(y)}")
+    out(f"tap {x},{y}")
+
+
+def push(path):
+    need()
+    path = os.path.expanduser(path)
+    if not os.path.isfile(path):
+        die("no such file")
+    audio = path.lower().endswith((".mp3", ".m4a", ".ogg", ".opus", ".flac", ".wav", ".aac"))
+    dest = "/sdcard/Music/" if audio else "/sdcard/Download/"
+    code, o, e = adb("push", path, dest, timeout=600)
+    if code != 0:
+        die(((o + e).strip().splitlines() or ["push failed"])[-1][:120])
+    f = dest + os.path.basename(path)
+    sh(f"am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d 'file://{f}'")
+    out(f"copied to {f}")
+
+
+def wifi_mode(mode):
+    need()
+    if mode not in ("on", "auto", "off"):
+        die("wifi mode is on, auto or off")
+    b = new_batch()
+    set_setting("system", "clockwork_wifi_setting", mode, f"Watch Wi-Fi {mode}", b)
+    # Developer option 'Turn off automatic Wi-Fi': on keeps Wear OS from switching Wi-Fi off near the phone.
+    set_setting("global", "cw_disable_wifimediator", "1" if mode == "on" else "0", f"Watch Wi-Fi {mode}", b)
+    if mode == "on":
+        sh("cmd wifi set-wifi-enabled enabled")
+    write_log_report()
+    out("watch Wi-Fi: " + mode + (" (the link drops when it turns off)" if mode != "on" else ""))
+
+
 def main(a):
     if not a:
         die(__doc__)
@@ -1162,6 +1536,9 @@ def main(a):
     if c == "dns" and r: return dns(r[0])
     if c == "anim" and r: return anim(r[0])
     if c == "density" and r: return density(r[0])
+    if c == "size" and r: return size(r[0])
+    if c == "rotate" and r: return rotate(r[0])
+    if c == "stock": return stock()
     if c == "toggle" and len(r) == 2: return toggle(*r)
     if c == "default" and len(r) == 2: return default(*r)
     if c == "killall":
@@ -1175,6 +1552,18 @@ def main(a):
     if c == "export" and r: return export(r[0])
     if c == "import" and r: return import_(r[0])
     if c == "grantwss": return grantwss()
+    if c == "input" and r: return watch_input(" ".join(r))
+    if c == "key" and r and r[0] in KEYS:
+        need(); sh(f"input keyevent {KEYS[r[0]]}"); return out("key " + r[0])
+    if c == "launch" and r: return watch_launch(r[0])
+    if c == "buzz":
+        need(); sh("input keyevent KEYCODE_WAKEUP; cmd vibrator_manager synced -f waveform 600 300 600 300 600"); return out("buzzing")
+    if c == "face" and r: return set_face(r[0])
+    if c == "swipe" and r: return swipe(r[0])
+    if c == "bezel" and r: return bezel(r[0])
+    if c == "tap" and len(r) == 2: return tap(*r)
+    if c == "push" and r: return push(" ".join(r))
+    if c == "wifi" and r: return wifi_mode(r[0])
     die(__doc__)
 
 
