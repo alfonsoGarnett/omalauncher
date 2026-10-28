@@ -50,6 +50,14 @@ class Proot(
             "$GUEST_HOME/.config/omarchy/backgrounds" to LauncherData.userBackgroundsDir(context),
         )
 
+    /** Android primary shared external storage (/sdcard, /storage/emulated/0). */
+    private val sharedStorage = android.os.Environment.getExternalStorageDirectory()
+    private val storageBinds =
+        listOf(
+            "/sdcard" to sharedStorage,
+            "$GUEST_HOME/storage" to sharedStorage,
+        )
+
     /**
      * Android's Chinese, Japanese and Korean font, which the guest has none of (Arch's is ~300 MB).
      * Absent on some devices; the guest then goes without, as before.
@@ -57,7 +65,7 @@ class Proot(
     private val cjkFont = File("/system/fonts/NotoSansCJK-Regular.ttc")
 
     /** Host directories bound over guest paths by [command]. */
-    private val binds = listOf("/tmp" to tmpDir, "/dev/shm" to tmpDir, GUEST_RUNTIME_DIR to runtimeDir) + dataBinds
+    private val binds = listOf("/tmp" to tmpDir, "/dev/shm" to tmpDir, GUEST_RUNTIME_DIR to runtimeDir) + dataBinds + storageBinds
 
     /**
      * Where an absolute guest path lives on the Android side, following the
@@ -109,6 +117,10 @@ class Proot(
         for ((guest, host) in dataBinds) {
             host.mkdirs()
             if (rootfs.isDirectory) File(rootfs, guest.removePrefix("/")).mkdirs()
+        }
+        if (rootfs.isDirectory) {
+            File(rootfs, "sdcard").mkdirs()
+            File(home, "storage").mkdirs()
         }
         File(rootfs, "var/lib/pacman/db.lck").delete()
         // An empty stand-in, so fontconfig lists the bound font when it reads the directory.
