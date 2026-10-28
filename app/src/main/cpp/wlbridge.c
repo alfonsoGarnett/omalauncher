@@ -12,10 +12,31 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+
+#ifndef DMA_BUF_SYNC_READ
+struct dma_buf_sync {
+    uint64_t flags;
+};
+#define DMA_BUF_SYNC_READ (1 << 0)
+#define DMA_BUF_SYNC_WRITE (2 << 0)
+#define DMA_BUF_SYNC_RW (DMA_BUF_SYNC_READ | DMA_BUF_SYNC_WRITE)
+#define DMA_BUF_SYNC_START (0 << 2)
+#define DMA_BUF_SYNC_END (1 << 2)
+#define DMA_BUF_BASE 'b'
+#define DMA_BUF_IOCTL_SYNC _IOW(DMA_BUF_BASE, 0, struct dma_buf_sync)
+#endif
+
+#define DRM_FORMAT_ARGB8888 0x34325241
+#define DRM_FORMAT_XRGB8888 0x34325258
+#define DRM_FORMAT_ABGR8888 0x34324241
+#define DRM_FORMAT_XBGR8888 0x34324258
+#define DRM_FORMAT_RGBA8888 0x34324152
+#define DRM_FORMAT_RGBX8888 0x34325852
 
 #define TAG "wlbridge"
 #define MAX_FDS 28
@@ -233,6 +254,75 @@ JNIEXPORT jint JNICALL FN(storeCopy)(JNIEnv *env, jclass cls, jlong shm, jint of
         result = -1;
     }
     bus_jmp = NULL;
+    (*env)->ReleaseIntArrayElements(env, jrects, rects, JNI_ABORT);
+    return result;
+}
+
+static inline uint32_t copy_row(uint32_t *restrict d, const uint32_t *restrict s, int n, uint32_t alpha) {
+    uint32_t all = 0xff000000u;
+    for (int x = 0; x < n; x++) {
+        uint32_t p = s[x] | alpha;
+        all &= p;
+        d[x] = p;
+    }
+    return all & 0xff000000u;
+}
+
+// Copies [count] rects of a dmabuf buffer into [store]. Handles DRM formats,
+// y-invert, cache synchronization, and SIGBUS guarding.
+JNIEXPORT jint JNICALL FN(dmabufCopy)(JNIEnv *env, jclass cls, jlong dmabuf, jint fd, jint offset, jint stride,
+                                      jint format, jint flags, jlong store, jintArray jrects, jint count) {
+    Store *st = (Store *) (intptr_t) store;
+    jint *rects = (*env)->GetIntArrayElements(env, jrects, NULL);
+    const uint8_t *src = (const uint8_t *) (intptr_t) dmabuf + offset;
+    int is_swizzle = (format == DRM_FORMAT_ARGB8888 || format == DRM_FORMAT_XRGB8888);
+    int is_opaque_fmt = (format == DRM_FORMAT_XRGB8888 || format == DRM_FORMAT_XBGR8888 || format == DRM_FORMAT_RGBX8888);
+    uint32_t alpha = is_opaque_fmt ? 0xff000000u : 0;
+    int y_invert = (flags & 1) != 0;
+
+    if (fd >= 0) {
+        struct dma_buf_sync sync = {.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ};
+        ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
+    }
+
+    sigjmp_buf jmp;
+    int result = 0;
+    if (sigsetjmp(jmp, 1) == 0) {
+        bus_jmp = &jmp;
+        for (int i = 0; i < count; i++) {
+            int x0 = max_i(rects[i * 4], 0), y0 = max_i(rects[i * 4 + 1], 0);
+            int x1 = min_i(rects[i * 4] + rects[i * 4 + 2], st->width);
+            int y1 = min_i(rects[i * 4 + 1] + rects[i * 4 + 3], st->height);
+            uint32_t all = 0xff000000u;
+            for (int y = y0; y < y1; y++) {
+                int srcY = y_invert ? (st->height - 1 - y) : y;
+                if (srcY < 0 || srcY >= st->height) continue;
+                const uint32_t *s = (const uint32_t *) (src + (size_t) srcY * stride) + x0;
+                uint32_t *d = st->px + (size_t) y * st->width + x0;
+                int n = x1 - x0;
+                if (is_swizzle) {
+                    all &= swizzle_row(d, s, n, alpha);
+                } else {
+                    all &= copy_row(d, s, n, alpha);
+                }
+            }
+            if (all != 0xff000000u) {
+                st->translucent = 1;
+            } else if (x0 == 0 && y0 == 0 && x1 == st->width && y1 == st->height) {
+                st->translucent = 0;
+            }
+        }
+    } else {
+        __android_log_print(ANDROID_LOG_WARN, TAG, "SIGBUS reading dmabuf");
+        result = -1;
+    }
+    bus_jmp = NULL;
+
+    if (fd >= 0) {
+        struct dma_buf_sync sync = {.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ};
+        ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
+    }
+
     (*env)->ReleaseIntArrayElements(env, jrects, rects, JNI_ABORT);
     return result;
 }
