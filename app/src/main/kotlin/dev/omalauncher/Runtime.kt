@@ -350,6 +350,8 @@ class Runtime(
         }
         // Apps render in software until the GPU passed its check on this system build.
         scope.launch { gpu.recheck() }
+        // Export android apps now that Linux /run/user/0 is up
+        scope.launch { dev.omalauncher.bridge.AppWatcher.export(context, androidApps.apps.toList()) }
     }
 
     /** Turns GPU acceleration on (installing and checking the driver) or off, for Linux apps started from then on. */
