@@ -129,6 +129,7 @@ class Runtime(
     /** Its jobs write files and start the guest; one that fails (storage full) mustn't take the home screen down. */
     private val scope =
         CoroutineScope(SupervisorJob() + Dispatchers.Main + CoroutineExceptionHandler { _, e -> Log.e(TAG, "background job failed", e) })
+    val metrics = dev.omalauncher.bridge.MetricsWatcher(context, scope)
     private var started = false
     private var prepared = false
 
@@ -203,6 +204,7 @@ class Runtime(
     fun start() {
         if (started) return
         started = true
+        metrics.start()
         scope.launch {
             withContext(Dispatchers.IO) {
                 launcherFiles.sync()
@@ -412,14 +414,20 @@ class Runtime(
     private var screens = 0
 
     fun screenStarted() {
-        if (screens++ == 0) proot.procShim.setActive(true)
+        if (screens++ == 0) {
+            proot.procShim.setActive(true)
+            metrics.screenStarted()
+        }
         // Only checks when the last check is hours old; see SystemUpdates.
         if (linux) scope.launch { updates.check() }
     }
 
     fun screenStopped() {
         screens = (screens - 1).coerceAtLeast(0)
-        if (screens == 0) proot.procShim.setActive(false)
+        if (screens == 0) {
+            proot.procShim.setActive(false)
+            metrics.screenStopped()
+        }
     }
 
     /** Whether every kind of app has been listed once: Android's, Linux's and owl's. Before, a list of them would be missing some. */
